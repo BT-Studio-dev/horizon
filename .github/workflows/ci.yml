@@ -192,26 +192,91 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
+          workspaces: |
+            .
+            launcher
           shared-key: verify-windows
       - name: Check Windows lint and shim tests
         run: |
-          cargo clippy --locked -p horizon-threads -p horizon-prepare -p horizon-server --all-targets -- -D warnings
-          cargo test --locked -p horizon-threads --lib
+          emit_err() {
+            local log="$1"
+            cat "$log"
+            python - "$log" <<'PY'
+          import sys
+          lines = [l.strip() for l in open(sys.argv[1], encoding="utf-8", errors="replace") if l.strip()]
+          picked = [l for l in lines if any(k in l for k in ("error", "LNK", "-->", "note:", "warning:", "imports "))]
+          if not picked:
+              picked = lines[-20:]
+          chunks = [" | ".join(picked[i:i+4])[:900] for i in range(0, min(len(picked), 36), 4)]
+          for c in chunks[:9]:
+              print(f"::error::{c}")
+          PY
+            exit 1
+          }
+          cargo clippy --locked -p horizon-threads -p horizon-prepare -p horizon-server --all-targets -- -D warnings > "$RUNNER_TEMP/step.log" 2>&1 || emit_err "$RUNNER_TEMP/step.log"
+          cat "$RUNNER_TEMP/step.log"
+          cargo test --locked -p horizon-threads --lib > "$RUNNER_TEMP/step.log" 2>&1 || emit_err "$RUNNER_TEMP/step.log"
+          cat "$RUNNER_TEMP/step.log"
       - name: Build Windows client, CLI, preparer and server
         run: |
-          cargo build --release --locked -p horizon-client --bin horizon-client --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
+          emit_err() {
+            local log="$1"
+            cat "$log"
+            python - "$log" <<'PY'
+          import sys
+          lines = [l.strip() for l in open(sys.argv[1], encoding="utf-8", errors="replace") if l.strip()]
+          picked = [l for l in lines if any(k in l for k in ("error", "LNK", "-->", "note:", "warning:", "imports "))]
+          if not picked:
+              picked = lines[-20:]
+          chunks = [" | ".join(picked[i:i+4])[:900] for i in range(0, min(len(picked), 36), 4)]
+          for c in chunks[:9]:
+              print(f"::error::{c}")
+          PY
+            exit 1
+          }
+          cargo build --release --locked -p horizon-client --bin horizon-client --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server > "$RUNNER_TEMP/build.log" 2>&1 || emit_err "$RUNNER_TEMP/build.log"
+          cat "$RUNNER_TEMP/build.log"
       - name: Verify Windows 7 SP1 imports and CLI startup
         run: |
           set -euo pipefail
           for binary in horizon-client horizon-ctl horizon-prepare horizon-server; do
             file="target/release/${binary}.exe"
             test -f "$file"
-            python tools/check_imports.py --win7 "$file"
+            python tools/check_imports.py --win7 "$file" 2>&1 | tee "$RUNNER_TEMP/imp.log" || {
+              while IFS= read -r l; do [[ -n "$l" ]] && echo "::error::$l"; done < "$RUNNER_TEMP/imp.log"
+              exit 1
+            }
           done
           target/release/horizon-client.exe --help | grep -q -- '--resources'
           target/release/horizon-ctl.exe --help > /dev/null
           target/release/horizon-prepare.exe --help | grep -q -- '--minecraft-dir'
           target/release/horizon-server.exe --version
+      - name: Build and check Windows launcher
+        working-directory: launcher
+        run: |
+          emit_err() {
+            local log="$1"
+            cat "$log"
+            python - "$log" <<'PY'
+          import sys
+          lines = [l.strip() for l in open(sys.argv[1], encoding="utf-8", errors="replace") if l.strip()]
+          picked = [l for l in lines if any(k in l for k in ("error", "LNK", "-->", "note:", "warning:", "imports "))]
+          if not picked:
+              picked = lines[-20:]
+          chunks = [" | ".join(picked[i:i+4])[:900] for i in range(0, min(len(picked), 36), 4)]
+          for c in chunks[:9]:
+              print(f"::error::{c}")
+          PY
+            exit 1
+          }
+          cargo test --release --locked > "$RUNNER_TEMP/ltest.log" 2>&1 || emit_err "$RUNNER_TEMP/ltest.log"
+          cat "$RUNNER_TEMP/ltest.log"
+          cargo build --release --locked > "$RUNNER_TEMP/lbuild.log" 2>&1 || emit_err "$RUNNER_TEMP/lbuild.log"
+          cat "$RUNNER_TEMP/lbuild.log"
+          python ../tools/check_imports.py --win7 target/release/horizon-launcher.exe 2>&1 | tee "$RUNNER_TEMP/limp.log" || {
+            while IFS= read -r l; do [[ -n "$l" ]] && echo "::error::$l"; done < "$RUNNER_TEMP/limp.log"
+            exit 1
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: horizon-windows-x64-binaries
