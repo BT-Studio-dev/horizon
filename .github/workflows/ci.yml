@@ -176,12 +176,58 @@ jobs:
       base: ${{ github.event.pull_request.base.sha }}
       head: ${{ github.event.pull_request.head.sha }}
       full: ${{ contains(github.event.pull_request.labels.*.name, 'full-parity') }}
+  windows:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: verify-windows
+      - name: Check Windows lint and shim tests
+        run: |
+          cargo clippy --locked -p horizon-threads -p horizon-prepare -p horizon-server --all-targets -- -D warnings
+          cargo test --locked -p horizon-threads --lib
+      - name: Build Windows client, CLI, preparer and server
+        run: |
+          cargo build --release --locked -p horizon-client --bin horizon-client --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
+      - name: Verify Windows 7 SP1 imports and CLI startup
+        run: |
+          set -euo pipefail
+          for binary in horizon-client horizon-ctl horizon-prepare horizon-server; do
+            file="target/release/${binary}.exe"
+            test -f "$file"
+            python tools/check_imports.py --win7 "$file"
+          done
+          target/release/horizon-client.exe --help | grep -q -- '--resources'
+          target/release/horizon-ctl.exe --help > /dev/null
+          target/release/horizon-prepare.exe --help | grep -q -- '--minecraft-dir'
+          target/release/horizon-server.exe --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-windows-x64-binaries
+          path: |
+            target/release/horizon-client.exe
+            target/release/horizon-ctl.exe
+            target/release/horizon-prepare.exe
+            target/release/horizon-server.exe
+          if-no-files-found: error
+          retention-days: 3
   # Horizon never downloads the game. These jobs need a self-hosted Linux runner
   # (label horizon-game) holding the maintainer's own copy: the official launcher's
   # game directory in HORIZON_MINECRAFT_DIR and the pinned server jar in
   # HORIZON_SERVER_JAR. Start them by hand: gh workflow run checks --ref <branch>.
   vanilla-parity:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'horizon-rust/horizon'
     runs-on: [self-hosted, linux, horizon-game]
     steps:
       - uses: actions/checkout@v4
@@ -529,7 +575,7 @@ jobs:
           RUSTUP_TOOLCHAIN: stable
         run: python tools/test_float_log_parity.py
   jfr-analysis:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'horizon-rust/horizon'
     runs-on: [self-hosted, linux, horizon-game]
     steps:
       - uses: actions/checkout@v4

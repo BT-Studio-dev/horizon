@@ -54,6 +54,9 @@ mod theme;
 mod themes_page;
 mod titlebar;
 mod while_playing;
+#[rustfmt::skip]
+#[cfg(target_os = "windows")]
+mod win7;
 mod worlds_page;
 
 use gpui::{
@@ -4758,6 +4761,10 @@ fn menus() -> Vec<Menu> {
 }
 
 fn main() {
+    #[cfg(target_os = "windows")]
+    win7::init();
+    #[cfg(not(target_os = "windows"))]
+    horizon_launcher::win7::init();
     if let Err(error) = console::attach_for_cli() {
         eprintln!("Could not restore the launcher's terminal streams: {error}");
         std::process::exit(1);

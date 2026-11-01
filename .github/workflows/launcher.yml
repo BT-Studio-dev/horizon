@@ -125,7 +125,7 @@ jobs:
             # The C runtime linked in: without it the launcher asks for VCRUNTIME140.dll,
             # which only the Visual C++ redistributable installs.
             rustflags: -C target-feature=+crt-static
-    runs-on: ${{ matrix.mac && (vars.MAC_RUNNER || 'ludovics-mac-mini') || matrix.os }}
+    runs-on: ${{ matrix.mac && (vars.MAC_RUNNER || (github.repository == 'horizon-rust/horizon' && 'ludovics-mac-mini' || 'macos-latest')) || matrix.os }}
     # Notarizing the app and then the .dmg can take a few minutes each.
     timeout-minutes: ${{ matrix.mac && 60 || 40 }}
     env:
@@ -172,6 +172,9 @@ jobs:
         # (xcodebuild -downloadComponent MetalToolchain), so there they are compiled when the launcher starts.
         if: runner.os == 'macOS'
         run: |
+          if [[ "${{ matrix.name }}" == macos-x64 && "${{ runner.environment }}" == github-hosted ]] && ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
           if ! xcrun metal --version > /dev/null 2>&1; then
             echo "::notice::No Metal toolchain on this runner: GPUI compiles its shaders at run time"
             echo "LAUNCHER_FEATURES=gpui/runtime_shaders" >> "$GITHUB_ENV"
@@ -189,7 +192,7 @@ jobs:
         run: |
           file="$BIN/${{ matrix.binary }}"
           case "$RUNNER_OS" in
-            Windows) python ../tools/check_imports.py "$file" ;;
+            Windows) python ../tools/check_imports.py --win7 "$file" ;;
             macOS) others=$(otool -L "$file" | tail -n +2 | awk '{print $1}' | grep -v -E '^(/usr/lib/|/System/Library/)' || true)
                    [[ -z "$others" ]] || { echo "::error::links $others"; exit 1; } ;;
           esac

@@ -1,6 +1,10 @@
 //! `horizon-prepare`: prepares Horizon's resources from your own Minecraft Java Edition.
 //! Its flags are the ones tools/prepare_native_client.py took.
 
+#[rustfmt::skip]
+#[path = "../../horizon-threads/src/win7.rs"]
+mod win7;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -87,6 +91,7 @@ fn default_root() -> Option<PathBuf> {
 }
 
 fn main() -> ExitCode {
+    win7::init();
     let mut options = horizon_prepare::Options {
         root: PathBuf::new(),
         import: false,

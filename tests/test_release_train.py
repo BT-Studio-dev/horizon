@@ -299,6 +299,14 @@ class NightlyTrainTests(unittest.TestCase):
         from tools.ci import nightly_set
         self.assertEqual(train.NIGHTLY_CAP, nightly_set.MAX_BUILDS_PER_DAY)
 
+    def test_fork_without_releases_does_not_walk_upstream_history(self):
+        with mock.patch.object(train, "REPO", "BT-Studio-dev/horizon"), \
+                mock.patch.object(train, "merged_between", return_value=[]) as between:
+            last, prs = train.gather("launcher", "deadbeef", releases=[])
+        self.assertIsNone(last)
+        self.assertEqual(prs, [])
+        between.assert_called_once_with("launcher", "deadbeef", "deadbeef")
+
 
 if __name__ == "__main__":
     unittest.main()

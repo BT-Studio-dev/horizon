@@ -182,7 +182,7 @@ jobs:
               others=$(otool -L "$file" | tail -n +2 | awk '{print $1}' | grep -v -E '^(/usr/lib/|/System/Library/)' || true)
               [[ -z "$others" ]] || { echo "::error::$binary links $others"; exit 1; }
             else
-              ${{ runner.os == 'Windows' && 'python' || 'python3' }} tools/check_imports.py "$file"
+              ${{ runner.os == 'Windows' && 'python tools/check_imports.py --win7' || 'python3 tools/check_imports.py' }} "$file"
             fi
           done
       - name: Every program starts

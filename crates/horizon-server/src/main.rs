@@ -29,6 +29,9 @@ mod signals;
 mod supervisor;
 mod update;
 mod websocket;
+#[rustfmt::skip]
+#[path = "../../horizon-threads/src/win7.rs"]
+mod win7;
 
 use std::{path::PathBuf, process::ExitCode};
 
@@ -102,6 +105,7 @@ Settings live in server.toml; the server writes server.properties from it before
 ";
 
 fn main() -> ExitCode {
+    win7::init();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut dir = PathBuf::from(".");
     if let Some(i) = args.iter().position(|a| a == "--dir") {

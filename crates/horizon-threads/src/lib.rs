@@ -5,6 +5,8 @@
 #[cfg(target_os = "windows")]
 pub mod boot_paint;
 pub mod memory_limit;
+#[rustfmt::skip]
+pub mod win7;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -215,6 +217,7 @@ const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
 /// quarter more memory than with the system heap; without it a few percent,
 /// and generation keeps most of its speed-up.
 pub fn configure_allocator() {
+    win7::init();
     // SAFETY: sets one integer option, which mimalloc reads at each purge.
     unsafe {
         libmimalloc_sys::mi_option_set(PURGE_DELAY, 0);
@@ -339,6 +342,7 @@ pub fn junction(target: &std::path::Path, at: &std::path::Path) -> std::io::Resu
 /// Unix needs none of this: a child's 0-2 are replaced and the rest are close-on-exec.
 #[cfg(windows)]
 pub fn keep_stdio_from_children() {
+    win7::init();
     use windows_sys::Win32::Foundation::{
         HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
     };

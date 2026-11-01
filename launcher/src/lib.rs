@@ -42,4 +42,7 @@ pub mod sources;
 pub mod tailscale;
 pub mod telemetry;
 pub mod themes;
+#[rustfmt::skip]
+#[cfg(not(target_os = "windows"))]
+pub mod win7;
 pub mod worlds;
