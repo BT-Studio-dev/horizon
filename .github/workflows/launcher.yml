@@ -180,7 +180,13 @@ jobs:
             echo "LAUNCHER_FEATURES=gpui/runtime_shaders" >> "$GITHUB_ENV"
           fi
       # Every test target (the library, the binary, tests/), on each system the launcher ships for.
-      - run: cargo test --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"}
+      - run: |
+          cargo test --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"} > "$RUNNER_TEMP/test.log" 2>&1 || {
+            cat "$RUNNER_TEMP/test.log"
+            grep -E '(FAILED|panicked|error\[|error:)' "$RUNNER_TEMP/test.log" | tail -n 8 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          }
+          cat "$RUNNER_TEMP/test.log"
       - run: cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"}
       - name: The version is the release's
         run: |
@@ -192,7 +198,11 @@ jobs:
         run: |
           file="$BIN/${{ matrix.binary }}"
           case "$RUNNER_OS" in
-            Windows) python ../tools/check_imports.py --win7 "$file" ;;
+            Windows)
+              python ../tools/check_imports.py --win7 "$file" 2>&1 | tee "$RUNNER_TEMP/imp.log" || {
+                while IFS= read -r l; do [[ -n "$l" ]] && echo "::error::$l"; done < "$RUNNER_TEMP/imp.log"
+                exit 1
+              } ;;
             macOS) others=$(otool -L "$file" | tail -n +2 | awk '{print $1}' | grep -v -E '^(/usr/lib/|/System/Library/)' || true)
                    [[ -z "$others" ]] || { echo "::error::links $others"; exit 1; } ;;
           esac

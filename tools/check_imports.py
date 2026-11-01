@@ -36,12 +36,19 @@ WINDOWS_POST_WIN7_DLLS = {
 }
 # Imported symbols added after Windows 7 SP1 that must be shimmed or loaded dynamically.
 WINDOWS_POST_WIN7_SYMBOLS = {
+    "ActivateAudioInterfaceAsync",
+    "AdjustWindowRectExForDpi",
     "CoIncrementMTAUsage",
     "CreateDXGIFactory2",
+    "CreateDirect3D11DeviceFromDXGIDevice",
+    "CreateDirect3D11SurfaceFromDXGISurface",
+    "CreateDispatcherQueueController",
     "DCompositionCreateDevice",
     "DXGIGetDebugInterface1",
+    "EnableNonClientDpiScaling",
     "GetCurrentPackageFullName",
     "GetDpiForMonitor",
+    "GetDpiForSystem",
     "GetDpiForWindow",
     "GetHostNameW",
     "GetPointerType",
@@ -50,14 +57,26 @@ WINDOWS_POST_WIN7_SYMBOLS = {
     "GetTempPath2W",
     "ProcessPrng",
     "RegisterSuspendResumeNotification",
+    "RoActivateInstance",
     "RoGetActivationFactory",
     "RoGetAgileReference",
+    "RoInitialize",
     "RoOriginateError",
     "RoOriginateErrorW",
+    "RoUninitialize",
+    "SetProcessDpiAwareness",
+    "SetProcessDpiAwarenessContext",
     "UnregisterSuspendResumeNotification",
     "WaitOnAddress",
     "WakeByAddressAll",
     "WakeByAddressSingle",
+    "WindowsCreateString",
+    "WindowsCreateStringReference",
+    "WindowsDeleteString",
+    "WindowsDuplicateString",
+    "WindowsGetStringLen",
+    "WindowsGetStringRawBuffer",
+    "WindowsIsStringEmpty",
     "u_strlen",
 }
 LINUX_LOADER = "/lib64/ld-linux-x86-64.so.2"
@@ -199,14 +218,13 @@ def check(path, server=False, win7=False):
     if data[:2] == b"MZ":
         tables = pe_import_tables(data)
         names = [dll for dll, _ in tables]
-        problems += [f"imports {n}, which Windows does not ship" for n in names if not windows_allowed(n)]
-        if win7:
-            problems += [
-                f"imports {n}, which Windows 7 SP1 does not ship"
-                for n in names
-                if windows_allowed(n) and not windows7_allowed(n)
-            ]
-            for dll, symbols in tables:
+        for dll, symbols in tables:
+            detail = f"{dll} ({', '.join(symbols)})" if symbols else dll
+            if not windows_allowed(dll):
+                problems.append(f"imports {detail}, which Windows does not ship")
+            elif win7 and not windows7_allowed(dll):
+                problems.append(f"imports {detail}, which Windows 7 SP1 does not ship")
+            if win7:
                 for sym in symbols:
                     if sym in WINDOWS_POST_WIN7_SYMBOLS:
                         problems.append(f"imports {dll}!{sym}, which Windows 7 SP1 does not export")

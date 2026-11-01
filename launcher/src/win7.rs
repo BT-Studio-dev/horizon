@@ -1509,6 +1509,7 @@ mod imp {
         scale_metric_for_dpi, utf16_strlen, wait_bucket_index, write_console_chunk_len,
     };
     use core::ffi::c_void;
+    use core::mem::size_of;
     use core::ptr;
     use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
@@ -1516,9 +1517,11 @@ mod imp {
     pub(super) const E_NOTIMPL: HRESULT = 0x8000_4001u32 as i32;
     pub(super) const E_NOINTERFACE: HRESULT = 0x8000_4002u32 as i32;
     pub(super) const E_POINTER: HRESULT = 0x8000_4003u32 as i32;
+    const E_OUTOFMEMORY: HRESULT = 0x8007_000Eu32 as i32;
     pub(super) const E_INVALIDARG: HRESULT = 0x8007_0057u32 as i32;
     const REGDB_E_CLASSNOTREG: HRESULT = 0x8004_0154u32 as i32;
     const DXGI_ERROR_NOT_FOUND: HRESULT = 0x887A_0002u32 as i32;
+    const HSTRING_REFERENCE_FLAG: u32 = 1;
 
     const ERROR_INVALID_PARAMETER: u32 = 87;
     const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
@@ -1633,6 +1636,11 @@ mod imp {
         'u', 'i', 'a', 'u', 't', 'o', 'm', 'a', 't', 'i', 'o', 'n', 'c', 'o', 'r', 'e', '.', 'd',
         'l', 'l'
     );
+    const MMDEVAPI_W: [u16; 13] =
+        wide_lit!('m', 'm', 'd', 'e', 'v', 'a', 'p', 'i', '.', 'd', 'l', 'l');
+    const COREMESSAGING_W: [u16; 18] = wide_lit!(
+        'c', 'o', 'r', 'e', 'm', 'e', 's', 's', 'a', 'g', 'i', 'n', 'g', '.', 'd', 'l', 'l'
+    );
 
     #[link(name = "kernel32")]
     extern "system" {
@@ -1655,6 +1663,9 @@ mod imp {
         fn GetCurrentProcess() -> HANDLE;
         fn CloseHandle(hObject: HANDLE) -> BOOL;
         fn GetConsoleMode(hConsoleHandle: HANDLE, lpMode: *mut u32) -> BOOL;
+        fn GetProcessHeap() -> HANDLE;
+        fn HeapAlloc(hHeap: HANDLE, dwFlags: u32, dwBytes: usize) -> *mut c_void;
+        fn HeapFree(hHeap: HANDLE, dwFlags: u32, lpMem: *mut c_void) -> BOOL;
         fn MultiByteToWideChar(
             CodePage: u32,
             dwFlags: u32,
@@ -1670,6 +1681,13 @@ mod imp {
         fn GetDC(hWnd: HWND) -> HANDLE;
         fn ReleaseDC(hWnd: HWND, hDC: HANDLE) -> i32;
         fn GetSystemMetrics(nIndex: i32) -> i32;
+        fn SetProcessDPIAware() -> BOOL;
+        fn AdjustWindowRectEx(
+            lpRect: *mut RECT,
+            dwStyle: u32,
+            bMenu: BOOL,
+            dwExStyle: u32,
+        ) -> BOOL;
     }
 
     #[link(name = "gdi32")]
@@ -3718,8 +3736,732 @@ mod imp {
         }
     );
 
+    #[repr(C)]
+    struct Win7HStringHeader {
+        flags: u32,
+        len: u32,
+        _0: u32,
+        _1: u32,
+        data: *mut u16,
+        count: AtomicU32,
+        buffer_start: u16,
+    }
+
+    #[repr(C)]
+    struct Win7HStringRefHeader {
+        flags: u32,
+        len: u32,
+        padding1: u32,
+        padding2: u32,
+        data: *const u16,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct DispatcherQueueOptionsAbi {
+        pub dw_size: u32,
+        pub thread_type: i32,
+        pub apartment_type: i32,
+    }
+
+    unsafe fn hstring_alloc(source: *const u16, length: u32) -> Result<*mut c_void, HRESULT> {
+        if length == 0 {
+            return Ok(ptr::null_mut());
+        }
+        if source.is_null() {
+            return Err(E_POINTER);
+        }
+        let Some(extra) = (length as usize).checked_mul(2) else {
+            return Err(E_OUTOFMEMORY);
+        };
+        let Some(bytes) = size_of::<Win7HStringHeader>().checked_add(extra) else {
+            return Err(E_OUTOFMEMORY);
+        };
+        let raw = HeapAlloc(GetProcessHeap(), 0, bytes).cast::<Win7HStringHeader>();
+        if raw.is_null() {
+            return Err(E_OUTOFMEMORY);
+        }
+        raw.write(Win7HStringHeader {
+            flags: 0,
+            len: length,
+            _0: 0,
+            _1: 0,
+            data: ptr::null_mut(),
+            count: AtomicU32::new(1),
+            buffer_start: 0,
+        });
+        let buf = ptr::addr_of_mut!((*raw).buffer_start);
+        (*raw).data = buf;
+        ptr::copy_nonoverlapping(source, buf, length as usize);
+        *buf.add(length as usize) = 0;
+        Ok(raw.cast::<c_void>())
+    }
+
+    define_shim!(
+        CoInitializeEx,
+        "__imp_CoInitializeEx",
+        IMP_CO_INITIALIZE_EX,
+        (pv_reserved: *const c_void, dw_coinit: u32) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            let Some(addr) = resolve_cached(&SLOT, &OLE32_W, true, b"CoInitializeEx\0") else {
+                return E_NOTIMPL;
+            };
+            let func: unsafe extern "system" fn(*const c_void, u32) -> HRESULT =
+                core::mem::transmute(addr);
+            func(pv_reserved, dw_coinit)
+        }
+    );
+
+    define_shim!(
+        CoInitialize,
+        "__imp_CoInitialize",
+        IMP_CO_INITIALIZE,
+        (pv_reserved: *const c_void) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            let Some(addr) = resolve_cached(&SLOT, &OLE32_W, true, b"CoInitialize\0") else {
+                return E_NOTIMPL;
+            };
+            let func: unsafe extern "system" fn(*const c_void) -> HRESULT =
+                core::mem::transmute(addr);
+            func(pv_reserved)
+        }
+    );
+
+    define_shim!(
+        CoUninitialize,
+        "__imp_CoUninitialize",
+        IMP_CO_UNINITIALIZE,
+        () {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(&SLOT, &OLE32_W, true, b"CoUninitialize\0") {
+                let func: unsafe extern "system" fn() = core::mem::transmute(addr);
+                func();
+            }
+        }
+    );
+
+    define_shim!(
+        CoCreateFreeThreadedMarshaler,
+        "__imp_CoCreateFreeThreadedMarshaler",
+        IMP_CO_CREATE_FREE_THREADED_MARSHALER,
+        (punk_outer: *mut c_void, ppunk_marshal: *mut *mut c_void) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            let Some(addr) =
+                resolve_cached(&SLOT, &OLE32_W, true, b"CoCreateFreeThreadedMarshaler\0")
+            else {
+                if !ppunk_marshal.is_null() {
+                    *ppunk_marshal = ptr::null_mut();
+                }
+                return E_NOINTERFACE;
+            };
+            let func: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT =
+                core::mem::transmute(addr);
+            func(punk_outer, ppunk_marshal)
+        }
+    );
+
+    define_shim!(
+        CoTaskMemAlloc,
+        "__imp_CoTaskMemAlloc",
+        IMP_CO_TASK_MEM_ALLOC,
+        (cb: usize) -> *mut c_void {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            let Some(addr) = resolve_cached(&SLOT, &OLE32_W, true, b"CoTaskMemAlloc\0") else {
+                return ptr::null_mut();
+            };
+            let func: unsafe extern "system" fn(usize) -> *mut c_void = core::mem::transmute(addr);
+            func(cb)
+        }
+    );
+
+    define_shim!(
+        CoTaskMemRealloc,
+        "__imp_CoTaskMemRealloc",
+        IMP_CO_TASK_MEM_REALLOC,
+        (pv: *const c_void, cb: usize) -> *mut c_void {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            let Some(addr) = resolve_cached(&SLOT, &OLE32_W, true, b"CoTaskMemRealloc\0") else {
+                return ptr::null_mut();
+            };
+            let func: unsafe extern "system" fn(*const c_void, usize) -> *mut c_void =
+                core::mem::transmute(addr);
+            func(pv, cb)
+        }
+    );
+
+    define_shim!(
+        CoTaskMemFree,
+        "__imp_CoTaskMemFree",
+        IMP_CO_TASK_MEM_FREE,
+        (pv: *const c_void) {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(&SLOT, &OLE32_W, true, b"CoTaskMemFree\0") {
+                let func: unsafe extern "system" fn(*const c_void) = core::mem::transmute(addr);
+                func(pv);
+            }
+        }
+    );
+
+    define_shim!(
+        StringFromIID,
+        "__imp_StringFromIID",
+        IMP_STRING_FROM_IID,
+        (rclsid: *const GUID, lplpsz: *mut *mut u16) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            let Some(addr) = resolve_cached(&SLOT, &OLE32_W, true, b"StringFromIID\0") else {
+                if !lplpsz.is_null() {
+                    *lplpsz = ptr::null_mut();
+                }
+                return E_OUTOFMEMORY;
+            };
+            let func: unsafe extern "system" fn(*const GUID, *mut *mut u16) -> HRESULT =
+                core::mem::transmute(addr);
+            func(rclsid, lplpsz)
+        }
+    );
+
+    define_shim!(
+        CLSIDFromProgID,
+        "__imp_CLSIDFromProgID",
+        IMP_CLSID_FROM_PROG_ID,
+        (lpsz_prog_id: *const u16, lpclsid: *mut GUID) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            let Some(addr) = resolve_cached(&SLOT, &OLE32_W, true, b"CLSIDFromProgID\0") else {
+                return REGDB_E_CLASSNOTREG;
+            };
+            let func: unsafe extern "system" fn(*const u16, *mut GUID) -> HRESULT =
+                core::mem::transmute(addr);
+            func(lpsz_prog_id, lpclsid)
+        }
+    );
+
+    define_shim!(
+        PropVariantClear,
+        "__imp_PropVariantClear",
+        IMP_PROP_VARIANT_CLEAR,
+        (pvar: *mut c_void) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            let Some(addr) = resolve_cached(&SLOT, &OLE32_W, true, b"PropVariantClear\0") else {
+                return S_OK;
+            };
+            let func: unsafe extern "system" fn(*mut c_void) -> HRESULT = core::mem::transmute(addr);
+            func(pvar)
+        }
+    );
+
+    define_shim!(
+        PropVariantCopy,
+        "__imp_PropVariantCopy",
+        IMP_PROP_VARIANT_COPY,
+        (pvar_dest: *mut c_void, pvar_src: *const c_void) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            let Some(addr) = resolve_cached(&SLOT, &OLE32_W, true, b"PropVariantCopy\0") else {
+                return E_NOTIMPL;
+            };
+            let func: unsafe extern "system" fn(*mut c_void, *const c_void) -> HRESULT =
+                core::mem::transmute(addr);
+            func(pvar_dest, pvar_src)
+        }
+    );
+
+    define_shim!(
+        RoInitialize,
+        "__imp_RoInitialize",
+        IMP_RO_INITIALIZE,
+        (init_type: i32) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(&SLOT, &COMBASE_W, true, b"RoInitialize\0") {
+                let func: unsafe extern "system" fn(i32) -> HRESULT = core::mem::transmute(addr);
+                return func(init_type);
+            }
+            let coinit = if init_type == 0 { 2u32 } else { 0u32 };
+            CoInitializeEx(ptr::null(), coinit)
+        }
+    );
+
+    define_shim!(
+        RoUninitialize,
+        "__imp_RoUninitialize",
+        IMP_RO_UNINITIALIZE,
+        () {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(&SLOT, &COMBASE_W, true, b"RoUninitialize\0") {
+                let func: unsafe extern "system" fn() = core::mem::transmute(addr);
+                func();
+                return;
+            }
+            CoUninitialize();
+        }
+    );
+
+    define_shim!(
+        RoActivateInstance,
+        "__imp_RoActivateInstance",
+        IMP_RO_ACTIVATE_INSTANCE,
+        (activatable_class_id: *mut c_void, instance: *mut *mut c_void) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(&SLOT, &COMBASE_W, true, b"RoActivateInstance\0") {
+                let func: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT =
+                    core::mem::transmute(addr);
+                return func(activatable_class_id, instance);
+            }
+            if !instance.is_null() {
+                *instance = ptr::null_mut();
+            }
+            REGDB_E_CLASSNOTREG
+        }
+    );
+
+    define_shim!(
+        SetRestrictedErrorInfo,
+        "__imp_SetRestrictedErrorInfo",
+        IMP_SET_RESTRICTED_ERROR_INFO,
+        (restricted_error_info: *mut c_void) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) =
+                resolve_cached(&SLOT, &COMBASE_W, true, b"SetRestrictedErrorInfo\0")
+            {
+                let func: unsafe extern "system" fn(*mut c_void) -> HRESULT =
+                    core::mem::transmute(addr);
+                return func(restricted_error_info);
+            }
+            S_OK
+        }
+    );
+
+    define_shim!(
+        GetRestrictedErrorInfo,
+        "__imp_GetRestrictedErrorInfo",
+        IMP_GET_RESTRICTED_ERROR_INFO,
+        (restricted_error_info: *mut *mut c_void) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) =
+                resolve_cached(&SLOT, &COMBASE_W, true, b"GetRestrictedErrorInfo\0")
+            {
+                let func: unsafe extern "system" fn(*mut *mut c_void) -> HRESULT =
+                    core::mem::transmute(addr);
+                return func(restricted_error_info);
+            }
+            if !restricted_error_info.is_null() {
+                *restricted_error_info = ptr::null_mut();
+            }
+            1
+        }
+    );
+
+    define_shim!(
+        RoCaptureErrorContext,
+        "__imp_RoCaptureErrorContext",
+        IMP_RO_CAPTURE_ERROR_CONTEXT,
+        (hr: HRESULT) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(&SLOT, &COMBASE_W, true, b"RoCaptureErrorContext\0")
+            {
+                let func: unsafe extern "system" fn(HRESULT) -> HRESULT =
+                    core::mem::transmute(addr);
+                return func(hr);
+            }
+            S_OK
+        }
+    );
+
+    define_shim!(
+        WindowsCreateString,
+        "__imp_WindowsCreateString",
+        IMP_WINDOWS_CREATE_STRING,
+        (source_string: *const u16, length: u32, string: *mut *mut c_void) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(&SLOT, &COMBASE_W, true, b"WindowsCreateString\0") {
+                let func: unsafe extern "system" fn(*const u16, u32, *mut *mut c_void) -> HRESULT =
+                    core::mem::transmute(addr);
+                return func(source_string, length, string);
+            }
+            if string.is_null() {
+                return E_INVALIDARG;
+            }
+            match hstring_alloc(source_string, length) {
+                Ok(ptr_val) => {
+                    *string = ptr_val;
+                    S_OK
+                }
+                Err(hr) => {
+                    *string = ptr::null_mut();
+                    hr
+                }
+            }
+        }
+    );
+
+    define_shim!(
+        WindowsCreateStringReference,
+        "__imp_WindowsCreateStringReference",
+        IMP_WINDOWS_CREATE_STRING_REFERENCE,
+        (
+            source_string: *const u16,
+            length: u32,
+            hstring_header: *mut c_void,
+            string: *mut *mut c_void,
+        ) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) =
+                resolve_cached(&SLOT, &COMBASE_W, true, b"WindowsCreateStringReference\0")
+            {
+                let func: unsafe extern "system" fn(
+                    *const u16,
+                    u32,
+                    *mut c_void,
+                    *mut *mut c_void,
+                ) -> HRESULT = core::mem::transmute(addr);
+                return func(source_string, length, hstring_header, string);
+            }
+            if string.is_null() || hstring_header.is_null() {
+                return E_INVALIDARG;
+            }
+            if source_string.is_null() {
+                *string = ptr::null_mut();
+                return E_POINTER;
+            }
+            if *source_string.add(length as usize) != 0 {
+                *string = ptr::null_mut();
+                return E_INVALIDARG;
+            }
+            if length == 0 {
+                *string = ptr::null_mut();
+                return S_OK;
+            }
+            let hdr = hstring_header.cast::<Win7HStringRefHeader>();
+            hdr.write(Win7HStringRefHeader {
+                flags: HSTRING_REFERENCE_FLAG,
+                len: length,
+                padding1: 0,
+                padding2: 0,
+                data: source_string,
+            });
+            *string = hstring_header;
+            S_OK
+        }
+    );
+
+    define_shim!(
+        WindowsDeleteString,
+        "__imp_WindowsDeleteString",
+        IMP_WINDOWS_DELETE_STRING,
+        (string: *mut c_void) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(&SLOT, &COMBASE_W, true, b"WindowsDeleteString\0") {
+                let func: unsafe extern "system" fn(*mut c_void) -> HRESULT =
+                    core::mem::transmute(addr);
+                return func(string);
+            }
+            if string.is_null() {
+                return S_OK;
+            }
+            let hdr = string.cast::<Win7HStringHeader>();
+            if ((*hdr).flags & HSTRING_REFERENCE_FLAG) == 0
+                && (*hdr).count.fetch_sub(1, Ordering::AcqRel) == 1
+            {
+                let _ = HeapFree(GetProcessHeap(), 0, string);
+            }
+            S_OK
+        }
+    );
+
+    define_shim!(
+        WindowsDuplicateString,
+        "__imp_WindowsDuplicateString",
+        IMP_WINDOWS_DUPLICATE_STRING,
+        (string: *mut c_void, new_string: *mut *mut c_void) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(&SLOT, &COMBASE_W, true, b"WindowsDuplicateString\0")
+            {
+                let func: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT =
+                    core::mem::transmute(addr);
+                return func(string, new_string);
+            }
+            if new_string.is_null() {
+                return E_INVALIDARG;
+            }
+            if string.is_null() {
+                *new_string = ptr::null_mut();
+                return S_OK;
+            }
+            let hdr = string.cast::<Win7HStringHeader>();
+            if ((*hdr).flags & HSTRING_REFERENCE_FLAG) == 0 {
+                (*hdr).count.fetch_add(1, Ordering::Relaxed);
+                *new_string = string;
+                S_OK
+            } else {
+                match hstring_alloc((*hdr).data, (*hdr).len) {
+                    Ok(copy) => {
+                        *new_string = copy;
+                        S_OK
+                    }
+                    Err(hr) => {
+                        *new_string = ptr::null_mut();
+                        hr
+                    }
+                }
+            }
+        }
+    );
+
+    define_shim!(
+        WindowsGetStringRawBuffer,
+        "__imp_WindowsGetStringRawBuffer",
+        IMP_WINDOWS_GET_STRING_RAW_BUFFER,
+        (string: *mut c_void, length: *mut u32) -> *const u16 {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) =
+                resolve_cached(&SLOT, &COMBASE_W, true, b"WindowsGetStringRawBuffer\0")
+            {
+                let func: unsafe extern "system" fn(*mut c_void, *mut u32) -> *const u16 =
+                    core::mem::transmute(addr);
+                return func(string, length);
+            }
+            static EMPTY_WIDE: u16 = 0;
+            if string.is_null() {
+                if !length.is_null() {
+                    *length = 0;
+                }
+                return ptr::addr_of!(EMPTY_WIDE);
+            }
+            let hdr = string.cast::<Win7HStringRefHeader>();
+            if !length.is_null() {
+                *length = (*hdr).len;
+            }
+            (*hdr).data
+        }
+    );
+
+    define_shim!(
+        WindowsGetStringLen,
+        "__imp_WindowsGetStringLen",
+        IMP_WINDOWS_GET_STRING_LEN,
+        (string: *mut c_void) -> u32 {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(&SLOT, &COMBASE_W, true, b"WindowsGetStringLen\0") {
+                let func: unsafe extern "system" fn(*mut c_void) -> u32 =
+                    core::mem::transmute(addr);
+                return func(string);
+            }
+            if string.is_null() {
+                0
+            } else {
+                (*string.cast::<Win7HStringRefHeader>()).len
+            }
+        }
+    );
+
+    define_shim!(
+        WindowsIsStringEmpty,
+        "__imp_WindowsIsStringEmpty",
+        IMP_WINDOWS_IS_STRING_EMPTY,
+        (string: *mut c_void) -> BOOL {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(&SLOT, &COMBASE_W, true, b"WindowsIsStringEmpty\0") {
+                let func: unsafe extern "system" fn(*mut c_void) -> BOOL =
+                    core::mem::transmute(addr);
+                return func(string);
+            }
+            if string.is_null() {
+                1
+            } else {
+                i32::from((*string.cast::<Win7HStringRefHeader>()).len == 0)
+            }
+        }
+    );
+
+    define_shim!(
+        ActivateAudioInterfaceAsync,
+        "__imp_ActivateAudioInterfaceAsync",
+        IMP_ACTIVATE_AUDIO_INTERFACE_ASYNC,
+        (
+            device_interface_path: *const u16,
+            riid: *const GUID,
+            activation_params: *const c_void,
+            completion_handler: *mut c_void,
+            activation_operation: *mut *mut c_void,
+        ) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) =
+                resolve_cached(&SLOT, &MMDEVAPI_W, true, b"ActivateAudioInterfaceAsync\0")
+            {
+                let func: unsafe extern "system" fn(
+                    *const u16,
+                    *const GUID,
+                    *const c_void,
+                    *mut c_void,
+                    *mut *mut c_void,
+                ) -> HRESULT = core::mem::transmute(addr);
+                return func(
+                    device_interface_path,
+                    riid,
+                    activation_params,
+                    completion_handler,
+                    activation_operation,
+                );
+            }
+            if !activation_operation.is_null() {
+                *activation_operation = ptr::null_mut();
+            }
+            E_NOTIMPL
+        }
+    );
+
+    define_shim!(
+        SetProcessDpiAwarenessContext,
+        "__imp_SetProcessDpiAwarenessContext",
+        IMP_SET_PROCESS_DPI_AWARENESS_CONTEXT,
+        (value: isize) -> BOOL {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) =
+                resolve_cached(&SLOT, &USER32_W, false, b"SetProcessDpiAwarenessContext\0")
+            {
+                let func: unsafe extern "system" fn(isize) -> BOOL = core::mem::transmute(addr);
+                return func(value);
+            }
+            SetProcessDPIAware()
+        }
+    );
+
+    define_shim!(
+        SetProcessDpiAwareness,
+        "__imp_SetProcessDpiAwareness",
+        IMP_SET_PROCESS_DPI_AWARENESS,
+        (value: i32) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(&SLOT, &SHCORE_W, true, b"SetProcessDpiAwareness\0")
+            {
+                let func: unsafe extern "system" fn(i32) -> HRESULT = core::mem::transmute(addr);
+                return func(value);
+            }
+            if value != 0 {
+                let _ = SetProcessDPIAware();
+            }
+            S_OK
+        }
+    );
+
+    define_shim!(
+        AdjustWindowRectExForDpi,
+        "__imp_AdjustWindowRectExForDpi",
+        IMP_ADJUST_WINDOW_RECT_EX_FOR_DPI,
+        (lp_rect: *mut RECT, dw_style: u32, b_menu: BOOL, dw_ex_style: u32, dpi: u32) -> BOOL {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) =
+                resolve_cached(&SLOT, &USER32_W, false, b"AdjustWindowRectExForDpi\0")
+            {
+                let func: unsafe extern "system" fn(*mut RECT, u32, BOOL, u32, u32) -> BOOL =
+                    core::mem::transmute(addr);
+                return func(lp_rect, dw_style, b_menu, dw_ex_style, dpi);
+            }
+            AdjustWindowRectEx(lp_rect, dw_style, b_menu, dw_ex_style)
+        }
+    );
+
+    define_shim!(
+        EnableNonClientDpiScaling,
+        "__imp_EnableNonClientDpiScaling",
+        IMP_ENABLE_NON_CLIENT_DPI_SCALING,
+        (hwnd: HWND) -> BOOL {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) =
+                resolve_cached(&SLOT, &USER32_W, false, b"EnableNonClientDpiScaling\0")
+            {
+                let func: unsafe extern "system" fn(HWND) -> BOOL = core::mem::transmute(addr);
+                return func(hwnd);
+            }
+            1
+        }
+    );
+
+    define_shim!(
+        GetDpiForSystem,
+        "__imp_GetDpiForSystem",
+        IMP_GET_DPI_FOR_SYSTEM,
+        () -> u32 {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(&SLOT, &USER32_W, false, b"GetDpiForSystem\0") {
+                let func: unsafe extern "system" fn() -> u32 = core::mem::transmute(addr);
+                return func();
+            }
+            system_screen_dpi()
+        }
+    );
+
+    define_shim!(
+        CreateDispatcherQueueController,
+        "__imp_CreateDispatcherQueueController",
+        IMP_CREATE_DISPATCHER_QUEUE_CONTROLLER,
+        (options: DispatcherQueueOptionsAbi, controller: *mut *mut c_void) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(
+                &SLOT,
+                &COREMESSAGING_W,
+                true,
+                b"CreateDispatcherQueueController\0",
+            ) {
+                let func: unsafe extern "system" fn(
+                    DispatcherQueueOptionsAbi,
+                    *mut *mut c_void,
+                ) -> HRESULT = core::mem::transmute(addr);
+                return func(options, controller);
+            }
+            if !controller.is_null() {
+                *controller = ptr::null_mut();
+            }
+            E_NOTIMPL
+        }
+    );
+
+    define_shim!(
+        CreateDirect3D11DeviceFromDXGIDevice,
+        "__imp_CreateDirect3D11DeviceFromDXGIDevice",
+        IMP_CREATE_DIRECT3D11_DEVICE_FROM_DXGI_DEVICE,
+        (dxgi_device: *mut c_void, graphics_device: *mut *mut c_void) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(
+                &SLOT,
+                &D3D11_W,
+                true,
+                b"CreateDirect3D11DeviceFromDXGIDevice\0",
+            ) {
+                let func: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT =
+                    core::mem::transmute(addr);
+                return func(dxgi_device, graphics_device);
+            }
+            if !graphics_device.is_null() {
+                *graphics_device = ptr::null_mut();
+            }
+            E_NOINTERFACE
+        }
+    );
+
+    define_shim!(
+        CreateDirect3D11SurfaceFromDXGISurface,
+        "__imp_CreateDirect3D11SurfaceFromDXGISurface",
+        IMP_CREATE_DIRECT3D11_SURFACE_FROM_DXGI_SURFACE,
+        (dxgi_surface: *mut c_void, graphics_surface: *mut *mut c_void) -> HRESULT {
+            static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+            if let Some(addr) = resolve_cached(
+                &SLOT,
+                &D3D11_W,
+                true,
+                b"CreateDirect3D11SurfaceFromDXGISurface\0",
+            ) {
+                let func: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT =
+                    core::mem::transmute(addr);
+                return func(dxgi_surface, graphics_surface);
+            }
+            if !graphics_surface.is_null() {
+                *graphics_surface = ptr::null_mut();
+            }
+            E_NOINTERFACE
+        }
+    );
+
     pub fn init() {
-        let refs: [usize; 31] = [
+        let refs: &[usize] = &[
             ptr::addr_of!(IMP_GET_SYSTEM_TIME_PRECISE_AS_FILE_TIME) as usize,
             ptr::addr_of!(IMP_GET_TEMP_PATH_2W) as usize,
             ptr::addr_of!(IMP_PROCESS_PRNG) as usize,
@@ -3750,7 +4492,41 @@ mod imp {
             ptr::addr_of!(IMP_DXGI_GET_DEBUG_INTERFACE_1) as usize,
             ptr::addr_of!(IMP_CO_CREATE_INSTANCE) as usize,
             ptr::addr_of!(IMP_D3D11_CREATE_DEVICE) as usize,
-            ptr::addr_of!(IMP_CREATE_DXGI_FACTORY_2) as usize ^ dwrite::shim_anchor(),
+            ptr::addr_of!(IMP_CREATE_DXGI_FACTORY_2) as usize,
+            dwrite::shim_anchor(),
+            ptr::addr_of!(IMP_CO_INITIALIZE_EX) as usize,
+            ptr::addr_of!(IMP_CO_INITIALIZE) as usize,
+            ptr::addr_of!(IMP_CO_UNINITIALIZE) as usize,
+            ptr::addr_of!(IMP_CO_CREATE_FREE_THREADED_MARSHALER) as usize,
+            ptr::addr_of!(IMP_CO_TASK_MEM_ALLOC) as usize,
+            ptr::addr_of!(IMP_CO_TASK_MEM_REALLOC) as usize,
+            ptr::addr_of!(IMP_CO_TASK_MEM_FREE) as usize,
+            ptr::addr_of!(IMP_STRING_FROM_IID) as usize,
+            ptr::addr_of!(IMP_CLSID_FROM_PROG_ID) as usize,
+            ptr::addr_of!(IMP_PROP_VARIANT_CLEAR) as usize,
+            ptr::addr_of!(IMP_PROP_VARIANT_COPY) as usize,
+            ptr::addr_of!(IMP_RO_INITIALIZE) as usize,
+            ptr::addr_of!(IMP_RO_UNINITIALIZE) as usize,
+            ptr::addr_of!(IMP_RO_ACTIVATE_INSTANCE) as usize,
+            ptr::addr_of!(IMP_SET_RESTRICTED_ERROR_INFO) as usize,
+            ptr::addr_of!(IMP_GET_RESTRICTED_ERROR_INFO) as usize,
+            ptr::addr_of!(IMP_RO_CAPTURE_ERROR_CONTEXT) as usize,
+            ptr::addr_of!(IMP_WINDOWS_CREATE_STRING) as usize,
+            ptr::addr_of!(IMP_WINDOWS_CREATE_STRING_REFERENCE) as usize,
+            ptr::addr_of!(IMP_WINDOWS_DELETE_STRING) as usize,
+            ptr::addr_of!(IMP_WINDOWS_DUPLICATE_STRING) as usize,
+            ptr::addr_of!(IMP_WINDOWS_GET_STRING_RAW_BUFFER) as usize,
+            ptr::addr_of!(IMP_WINDOWS_GET_STRING_LEN) as usize,
+            ptr::addr_of!(IMP_WINDOWS_IS_STRING_EMPTY) as usize,
+            ptr::addr_of!(IMP_ACTIVATE_AUDIO_INTERFACE_ASYNC) as usize,
+            ptr::addr_of!(IMP_SET_PROCESS_DPI_AWARENESS_CONTEXT) as usize,
+            ptr::addr_of!(IMP_SET_PROCESS_DPI_AWARENESS) as usize,
+            ptr::addr_of!(IMP_ADJUST_WINDOW_RECT_EX_FOR_DPI) as usize,
+            ptr::addr_of!(IMP_ENABLE_NON_CLIENT_DPI_SCALING) as usize,
+            ptr::addr_of!(IMP_GET_DPI_FOR_SYSTEM) as usize,
+            ptr::addr_of!(IMP_CREATE_DISPATCHER_QUEUE_CONTROLLER) as usize,
+            ptr::addr_of!(IMP_CREATE_DIRECT3D11_DEVICE_FROM_DXGI_DEVICE) as usize,
+            ptr::addr_of!(IMP_CREATE_DIRECT3D11_SURFACE_FROM_DXGI_SURFACE) as usize,
         ];
         core::hint::black_box(refs);
         if !has_dcomp() && std::env::var_os("GPUI_DISABLE_DIRECT_COMPOSITION").is_none() {

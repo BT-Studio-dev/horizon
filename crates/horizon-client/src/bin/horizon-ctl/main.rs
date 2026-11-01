@@ -410,6 +410,7 @@ fn script(session: &mut Session, reader: impl BufRead, keep_going: bool, pretty:
 }
 
 fn main() -> ExitCode {
+    horizon_threads::win7::init();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut socket = horizon_client::control::default_path();
     let mut timeout = None;
