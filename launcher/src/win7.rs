@@ -1615,7 +1615,7 @@ mod imp {
         'b', 'c', 'r', 'y', 'p', 't', 'p', 'r', 'i', 'm', 'i', 't', 'i', 'v', 'e', 's', '.', 'd',
         'l', 'l'
     );
-    const SYNCH_APISET_W: [u16; 32] = wide_lit!(
+    const SYNCH_APISET_W: [u16; 33] = wide_lit!(
         'a', 'p', 'i', '-', 'm', 's', '-', 'w', 'i', 'n', '-', 'c', 'o', 'r', 'e', '-', 's', 'y',
         'n', 'c', 'h', '-', 'l', '1', '-', '2', '-', '0', '.', 'd', 'l', 'l'
     );

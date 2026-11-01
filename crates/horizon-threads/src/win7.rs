@@ -231,7 +231,7 @@ mod imp {
         b'l' as u16,
         0,
     ];
-    const SYNCH_APISET_W: [u16; 32] = [
+    const SYNCH_APISET_W: [u16; 33] = [
         b'a' as u16,
         b'p' as u16,
         b'i' as u16,
