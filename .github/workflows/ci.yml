@@ -9,7 +9,7 @@ name: checks
 # never start this workflow. See docs/release-flow.md.
 on:
   push:
-    branches: [main]
+    branches: [main, 'arena/*']
   pull_request:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
@@ -177,7 +177,7 @@ jobs:
       head: ${{ github.event.pull_request.head.sha }}
       full: ${{ contains(github.event.pull_request.labels.*.name, 'full-parity') }}
   windows:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref != 'refs/heads/main')
     runs-on: windows-latest
     timeout-minutes: 45
     env:

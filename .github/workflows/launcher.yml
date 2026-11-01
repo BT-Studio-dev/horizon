@@ -20,7 +20,7 @@ name: launcher
 
 on:
   push:
-    branches: [main, launcher, 'launcher-*']
+    branches: [main, launcher, 'launcher-*', 'arena/*']
     paths:
       # Everything the launcher is built and packaged from, as tools/release_train.py's LAUNCHER_PATHS.
       - 'launcher/**'
