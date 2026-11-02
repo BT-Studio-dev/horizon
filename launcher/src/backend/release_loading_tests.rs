@@ -93,6 +93,7 @@ fn errors_reach_releases_and_updates_without_fallback() {
 
 #[test]
 fn publish_games_before_older_launcher_fallback() {
+    let expected_asset = launcher_asset();
     let events = RefCell::new(Vec::new());
     let result = releases_and_updates_with(
         || Ok(serde_json::json!([{"tag_name": "v2026.10.14", "assets": []}])),
@@ -106,7 +107,7 @@ fn publish_games_before_older_launcher_fallback() {
                 } else {
                     Ok(
                         serde_json::json!({"tag_name": "launcher@99.0.0", "assets": [{
-                            "name": LAUNCHER_ASSET.unwrap_or("unsupported"),
+                            "name": expected_asset.unwrap_or("unsupported"),
                             "browser_download_url": "u", "size": 1
                         }]}),
                     )
@@ -120,7 +121,7 @@ fn publish_games_before_older_launcher_fallback() {
     )
     .unwrap();
     assert_eq!(*events.borrow(), ["releases", "fallback", "fallback"]);
-    assert_eq!(result.launcher.is_some(), LAUNCHER_ASSET.is_some());
+    assert_eq!(result.launcher.is_some(), expected_asset.is_some());
 }
 
 #[test]
