@@ -1522,6 +1522,7 @@ mod imp {
     const REGDB_E_CLASSNOTREG: HRESULT = 0x8004_0154u32 as i32;
     const DXGI_ERROR_NOT_FOUND: HRESULT = 0x887A_0002u32 as i32;
     const HSTRING_REFERENCE_FLAG: u32 = 1;
+    const IS_LEGACY_BUILD: bool = matches!(option_env!("HORIZON_LAUNCHER_LEGACY"), Some("1"));
 
     const ERROR_INVALID_PARAMETER: u32 = 87;
     const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
@@ -4529,7 +4530,9 @@ mod imp {
             ptr::addr_of!(IMP_CREATE_DIRECT3D11_SURFACE_FROM_DXGI_SURFACE) as usize,
         ];
         core::hint::black_box(refs);
-        if !has_dcomp() && std::env::var_os("GPUI_DISABLE_DIRECT_COMPOSITION").is_none() {
+        if (IS_LEGACY_BUILD || !has_dcomp())
+            && std::env::var_os("GPUI_DISABLE_DIRECT_COMPOSITION").is_none()
+        {
             std::env::set_var("GPUI_DISABLE_DIRECT_COMPOSITION", "1");
         }
     }

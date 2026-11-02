@@ -1,0 +1,128 @@
+name: horizon-Launcher Legacy
+# Builds and packages the Legacy Windows 7 SP1 64-bit edition of Horizon Launcher
+# (`HORIZON_LAUNCHER_LEGACY=1`), statically linking the C runtime (`+crt-static`),
+# embedding the Windows 7 runtime API/COM/DirectWrite/DXGI/WARP shims, and verifying
+# that the resulting PE32+ executable imports zero Windows 8+/10+ DLLs or entry points.
+
+on:
+  push:
+    branches: [main, launcher, 'launcher-*', 'arena/*']
+    paths:
+      - 'launcher/**'
+      - 'crates/horizon-bench/**'
+      - 'crates/horizon-friends/**'
+      - 'crates/horizon-mods/**'
+      - 'crates/horizon-port-pack/**'
+      - 'crates/horizon-prepare/**'
+      - 'crates/horizon-release-sign/**'
+      - 'crates/horizon-telemetry/**'
+      - 'crates/horizon-theme/**'
+      - 'packaging/icons/**'
+      - 'tools/check_imports.py'
+      - '.github/workflows/launcher-legacy.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Optional launcher version override (defaults to launcher/Cargo.toml)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: launcher-legacy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  HORIZON_TELEMETRY_URL: "off"
+
+jobs:
+  build-legacy:
+    name: build windows-7-x64 (Legacy)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+      HORIZON_LAUNCHER_LEGACY: "1"
+      HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
+      HORIZON_CURSEFORGE_API_KEY: ${{ secrets.HORIZON_CURSEFORGE_API_KEY }}
+      HORIZON_LAUNCHER_VERSION: ${{ inputs.version || '' }}
+    defaults:
+      run:
+        working-directory: launcher
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          clean: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          workspaces: launcher
+          shared-key: launcher-windows
+      - name: Run unit tests
+        run: |
+          cargo test --release --locked > "$RUNNER_TEMP/test.log" 2>&1 || {
+            cat "$RUNNER_TEMP/test.log"
+            grep -E '(FAILED|panicked|error\[|error:)' "$RUNNER_TEMP/test.log" | tail -n 8 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          }
+          cat "$RUNNER_TEMP/test.log"
+      - name: Build Legacy launcher (Windows 7 SP1 64-bit)
+        run: |
+          cargo build --release --locked > "$RUNNER_TEMP/build.log" 2>&1 || {
+            cat "$RUNNER_TEMP/build.log"
+            grep -E '(error\[|error:|LNK)' "$RUNNER_TEMP/build.log" | tail -n 8 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          }
+          cat "$RUNNER_TEMP/build.log"
+      - name: Verify version output
+        run: |
+          out=$(target/release/horizon-launcher.exe --version)
+          echo "$out"
+          expected="${HORIZON_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}"
+          [[ "$out" == "horizon-launcher $expected" ]] || { echo "::error::expected horizon-launcher $expected, got $out"; exit 1; }
+      - name: Verify Windows 7 SP1 64-bit system library imports
+        run: |
+          python ../tools/check_imports.py --win7 target/release/horizon-launcher.exe 2>&1 | tee "$RUNNER_TEMP/imp.log" || {
+            while IFS= read -r l; do [[ -n "$l" ]] && echo "::error::$l"; done < "$RUNNER_TEMP/imp.log"
+            exit 1
+          }
+      - name: Smoke test CLI
+        env:
+          HORIZON_LAUNCHER_NO_SELF_UPDATE: '1'
+          HORIZON_GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export HORIZON_LAUNCHER_HOME="${RUNNER_TEMP//\\//}/horizon-launcher-legacy-smoke"
+          export HORIZON_HOME="$HORIZON_LAUNCHER_HOME/game"
+          rm -rf "$HORIZON_LAUNCHER_HOME"
+          launcher="$PWD/target/release/horizon-launcher.exe"
+          retry() { for i in 1 2 3 4; do "$@" && return 0; sleep $((i * 15)); done; return 1; }
+          retry "$launcher" versions
+          "$launcher" links --json
+          rm -rf "$HORIZON_LAUNCHER_HOME"
+      - name: Package Legacy Windows 7 x64 release archive
+        run: |
+          rm -rf dist out && mkdir -p dist out
+          cp target/release/horizon-launcher.exe dist/horizon-launcher-legacy.exe
+          cp target/release/horizon-launcher.exe out/horizon-launcher-legacy.exe
+          cp target/release/horizon-launcher.exe out/horizon-launcher.exe
+          (cd dist && 7z a ../out/horizon-launcher-windows-x64-legacy.zip horizon-launcher-legacy.exe)
+          (cd out && sha256sum horizon-launcher-windows-x64-legacy.zip horizon-launcher-legacy.exe horizon-launcher.exe > SHA256SUMS)
+          ls -lh out
+          cat out/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-Launcher-Legacy-windows-7-x64
+          path: |
+            launcher/out/horizon-launcher-windows-x64-legacy.zip
+            launcher/out/horizon-launcher-legacy.exe
+            launcher/out/horizon-launcher.exe
+            launcher/out/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14

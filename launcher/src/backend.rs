@@ -127,11 +127,22 @@ pub const LAUNCHER_APPIMAGE_ASSET: Option<&str> = Some("horizon-launcher-linux-x
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 pub const LAUNCHER_APPIMAGE_ASSET: Option<&str> = None;
 
+/// The Windows 7 SP1 64-bit Legacy launcher archive (`HORIZON_LAUNCHER_LEGACY=1`).
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub const LAUNCHER_LEGACY_ASSET: Option<&str> = Some("horizon-launcher-windows-x64-legacy.zip");
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+pub const LAUNCHER_LEGACY_ASSET: Option<&str> = None;
+
+/// True when built with `HORIZON_LAUNCHER_LEGACY=1` (the Windows 7 64-bit Legacy build).
+pub const IS_LEGACY_BUILD: bool = matches!(option_env!("HORIZON_LAUNCHER_LEGACY"), Some("1"));
+
 const LAUNCHER_BINARY: &str = if cfg!(windows) {
     "horizon-launcher.exe"
 } else {
     "horizon-launcher"
 };
+
+const LAUNCHER_LEGACY_BINARY: &str = "horizon-launcher-legacy.exe";
 
 pub(crate) const CLIENT: &str = if cfg!(windows) {
     "horizon-client.exe"
@@ -2677,17 +2688,25 @@ pub fn update_target() -> PathBuf {
 }
 
 /// The launcher archive this build installs from: the AppImage's when it runs from one (a `.tar.gz`
-/// binary would be written inside the read-only mount), this platform's otherwise.
+/// binary would be written inside the read-only mount), the Windows 7 Legacy zip when built with
+/// `HORIZON_LAUNCHER_LEGACY=1`, or this platform's standard archive otherwise.
 pub fn launcher_asset() -> Option<&'static str> {
-    launcher_asset_running_from(appimage_path().is_some())
+    launcher_asset_for(appimage_path().is_some(), IS_LEGACY_BUILD)
 }
 
-fn launcher_asset_running_from(appimage: bool) -> Option<&'static str> {
+fn launcher_asset_for(appimage: bool, legacy: bool) -> Option<&'static str> {
     if appimage {
         LAUNCHER_APPIMAGE_ASSET
+    } else if legacy && LAUNCHER_LEGACY_ASSET.is_some() {
+        LAUNCHER_LEGACY_ASSET
     } else {
         LAUNCHER_ASSET
     }
+}
+
+#[cfg(test)]
+fn launcher_asset_running_from(appimage: bool) -> Option<&'static str> {
+    launcher_asset_for(appimage, false)
 }
 
 /// Development builds and `HORIZON_LAUNCHER_NO_SELF_UPDATE` never replace themselves.
@@ -2914,8 +2933,9 @@ pub fn self_update(release: &Release, progress: impl Fn(f32)) -> Result<(), Stri
             return Ok(());
         }
     }
-    let binary =
-        find_file(&unpacked, LAUNCHER_BINARY).ok_or("The download has no launcher binary.")?;
+    let binary = find_file(&unpacked, LAUNCHER_BINARY)
+        .or_else(|| find_file(&unpacked, LAUNCHER_LEGACY_BINARY))
+        .ok_or("The download has no launcher binary.")?;
     replace_binary(&binary, exe_path()).map_err(|e| {
         format!(
             "Could not replace the launcher at {}: {e}",
@@ -3698,6 +3718,10 @@ pub fn {f}("
                 "launcher.yml builds no {launcher_asset}"
             );
         }
+        assert!(
+            launcher.contains("asset: horizon-launcher-windows-x64-legacy.zip"),
+            "launcher.yml builds no horizon-launcher-windows-x64-legacy.zip"
+        );
     }
 
     #[test]
@@ -4082,10 +4106,19 @@ pub fn {f}("
     fn an_appimage_updates_with_the_appimage() {
         assert_eq!(launcher_asset_running_from(false), LAUNCHER_ASSET);
         assert_eq!(launcher_asset_running_from(true), LAUNCHER_APPIMAGE_ASSET);
+        assert_eq!(
+            launcher_asset_for(false, true),
+            LAUNCHER_LEGACY_ASSET.or(LAUNCHER_ASSET)
+        );
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         assert_eq!(
             launcher_asset_running_from(true),
             Some("horizon-launcher-linux-x86_64.AppImage")
+        );
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        assert_eq!(
+            launcher_asset_for(false, true),
+            Some("horizon-launcher-windows-x64-legacy.zip")
         );
     }
 

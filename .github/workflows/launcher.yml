@@ -125,11 +125,21 @@ jobs:
             # The C runtime linked in: without it the launcher asks for VCRUNTIME140.dll,
             # which only the Visual C++ redistributable installs.
             rustflags: -C target-feature=+crt-static
+          - name: windows-legacy
+            os: windows-latest
+            asset: horizon-launcher-windows-x64-legacy.zip
+            binary: horizon-launcher.exe
+            archive_binary: horizon-launcher-legacy.exe
+            cache_key: windows
+            legacy: '1'
+            # Legacy Windows 7 SP1 64-bit build: static CRT + Win7 runtime shims + DirectComposition off by default.
+            rustflags: -C target-feature=+crt-static
     runs-on: ${{ matrix.mac && (vars.MAC_RUNNER || (github.repository == 'horizon-rust/horizon' && 'ludovics-mac-mini' || 'macos-latest')) || matrix.os }}
     # Notarizing the app and then the .dmg can take a few minutes each.
     timeout-minutes: ${{ matrix.mac && 60 || 40 }}
     env:
       RUSTFLAGS: ${{ matrix.rustflags }}
+      HORIZON_LAUNCHER_LEGACY: ${{ matrix.legacy || '' }}
       # Where cargo puts the launcher: target/release, or target/<target>/release for another target.
       BIN: ${{ matrix.target && format('target/{0}/release', matrix.target) || 'target/release' }}
       # Horizon's Azure app for Microsoft sign-in (docs/microsoft-account.md): a repository
@@ -161,7 +171,7 @@ jobs:
         if: runner.environment == 'github-hosted'
         with:
           workspaces: launcher
-          shared-key: launcher-${{ matrix.name }}
+          shared-key: launcher-${{ matrix.cache_key || matrix.name }}
       - name: Linux libraries GPUI links to
         if: runner.os == 'Linux'
         run: |
@@ -280,11 +290,12 @@ jobs:
               ../packaging/linux/appimage.sh "$BIN/${{ matrix.binary }}" "$version" out
             fi
             mkdir -p dist
-            cp "$BIN/${{ matrix.binary }}" dist/
+            out_bin="${{ matrix.archive_binary || matrix.binary }}"
+            cp "$BIN/${{ matrix.binary }}" "dist/$out_bin"
             if [[ "${{ matrix.asset }}" == *.tar.gz ]]; then
-              (cd dist && tar czf ../out/${{ matrix.asset }} ${{ matrix.binary }})
+              (cd dist && tar czf ../out/${{ matrix.asset }} "$out_bin")
             else
-              (cd dist && 7z a ../out/${{ matrix.asset }} ${{ matrix.binary }})
+              (cd dist && 7z a ../out/${{ matrix.asset }} "$out_bin")
             fi
           fi
           ls -l out
