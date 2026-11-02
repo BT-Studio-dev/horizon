@@ -226,6 +226,35 @@ pub mod com_abi {
     }
 
     #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct DXGI_ADAPTER_DESC {
+        pub Description: [u16; 128],
+        pub VendorId: u32,
+        pub DeviceId: u32,
+        pub SubSysId: u32,
+        pub Revision: u32,
+        pub DedicatedVideoMemory: usize,
+        pub DedicatedSystemMemory: usize,
+        pub SharedSystemMemory: usize,
+        pub AdapterLuid: LUID,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct DXGI_ADAPTER_DESC1 {
+        pub Description: [u16; 128],
+        pub VendorId: u32,
+        pub DeviceId: u32,
+        pub SubSysId: u32,
+        pub Revision: u32,
+        pub DedicatedVideoMemory: usize,
+        pub DedicatedSystemMemory: usize,
+        pub SharedSystemMemory: usize,
+        pub AdapterLuid: LUID,
+        pub Flags: u32,
+    }
+
+    #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct DWRITE_FONT_METRICS {
         pub designUnitsPerEm: u16,
@@ -309,6 +338,21 @@ pub mod com_abi {
             unsafe extern "system" fn(*mut c_void, *const GUID, *mut u32, *mut c_void) -> HRESULT,
         pub GetParent:
             unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+    }
+
+    #[repr(C)]
+    pub struct IDXGIAdapter_Vtbl {
+        pub base: IDXGIObject_Vtbl,
+        pub EnumOutputs: unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> HRESULT,
+        pub GetDesc: unsafe extern "system" fn(*mut c_void, *mut DXGI_ADAPTER_DESC) -> HRESULT,
+        pub CheckInterfaceSupport:
+            unsafe extern "system" fn(*mut c_void, *const GUID, *mut i64) -> HRESULT,
+    }
+
+    #[repr(C)]
+    pub struct IDXGIAdapter1_Vtbl {
+        pub base: IDXGIAdapter_Vtbl,
+        pub GetDesc1: unsafe extern "system" fn(*mut c_void, *mut DXGI_ADAPTER_DESC1) -> HRESULT,
     }
 
     #[repr(C)]
@@ -1539,11 +1583,16 @@ mod imp {
     const LOGPIXELSX: i32 = 88;
     const USER_DEFAULT_SCREEN_DPI: u32 = 96;
 
-    const D3D_DRIVER_TYPE_WARP: i32 = 2;
+    const D3D_DRIVER_TYPE_HARDWARE: i32 = 1;
+    const D3D_DRIVER_TYPE_SOFTWARE: i32 = 4;
+    const D3D_DRIVER_TYPE_WARP: i32 = 5;
     const D3D_FEATURE_LEVEL_11_0: u32 = 0xb000;
     const D3D_FEATURE_LEVEL_10_1: u32 = 0xa100;
     const D3D11_CREATE_DEVICE_BGRA_SUPPORT: u32 = 0x20;
     const D3D11_SDK_VERSION: u32 = 7;
+    const D3D11_FEATURE_D3D10_X_HARDWARE_OPTIONS: i32 = 4;
+    const DXGI_ADAPTER_FLAG_SOFTWARE: u32 = 2;
+    const DXGI_MWA_NO_ALT_ENTER: u32 = 2;
     const DIRECTMANIPULATION_READY: i32 = 1;
 
     pub(super) const IID_IUNKNOWN: GUID = GUID::from_u128(0x00000000_0000_0000_c000_000000000046);
@@ -1552,6 +1601,7 @@ mod imp {
     const IID_IDXGI_DEVICE_SUB_OBJECT: GUID =
         GUID::from_u128(0x3d3e0379_f9de_4d58_bb6c_18d62992f1a6);
     const IID_IDXGI_DEVICE: GUID = GUID::from_u128(0x54ec77fa_1377_44e6_8c32_88fd5f44c84c);
+    const IID_IDXGI_ADAPTER: GUID = GUID::from_u128(0x2411e7e1_12ac_4ccf_bd14_9798e8534dc0);
     const IID_IDXGI_ADAPTER1: GUID = GUID::from_u128(0x29038f61_3839_4626_91fd_086879011a05);
     const IID_IDXGI_FACTORY: GUID = GUID::from_u128(0x7b7166ec_21c7_44ae_b21a_c9ae321ae369);
     const IID_IDXGI_FACTORY1: GUID = GUID::from_u128(0x770aae78_f26f_4dba_a829_253c83d1b387);
@@ -1678,6 +1728,27 @@ mod imp {
             lpWideCharStr: *mut u16,
             cchWideChar: i32,
         ) -> i32;
+        fn GetModuleFileNameW(hModule: HMODULE, lpFilename: *mut u16, nSize: u32) -> u32;
+        fn GetModuleHandleExW(
+            dwFlags: u32,
+            lpModuleName: *const u16,
+            phModule: *mut HMODULE,
+        ) -> BOOL;
+        fn GetFileAttributesW(lpFileName: *const u16) -> u32;
+        fn GetCurrentThreadId() -> u32;
+        fn TerminateProcess(hProcess: HANDLE, uExitCode: u32) -> BOOL;
+        fn VirtualProtect(
+            lpAddress: *mut c_void,
+            dwSize: usize,
+            flNewProtect: u32,
+            lpflOldProtect: *mut u32,
+        ) -> BOOL;
+        fn SetErrorMode(uMode: u32) -> u32;
+        fn SetUnhandledExceptionFilter(
+            lpTopLevelExceptionFilter: Option<
+                unsafe extern "system" fn(*const EXCEPTION_POINTERS) -> i32,
+            >,
+        ) -> Option<unsafe extern "system" fn(*const EXCEPTION_POINTERS) -> i32>;
     }
 
     #[link(name = "user32")]
@@ -1692,6 +1763,43 @@ mod imp {
             bMenu: BOOL,
             dwExStyle: u32,
         ) -> BOOL;
+        fn MessageBoxW(
+            hWnd: HWND,
+            lpText: *const u16,
+            lpCaption: *const u16,
+            uType: u32,
+        ) -> i32;
+    }
+
+    #[repr(C)]
+    struct RTL_OSVERSIONINFOEXW {
+        dwOSVersionInfoSize: u32,
+        dwMajorVersion: u32,
+        dwMinorVersion: u32,
+        dwBuildNumber: u32,
+        dwPlatformId: u32,
+        szCSDVersion: [u16; 128],
+        wServicePackMajor: u16,
+        wServicePackMinor: u16,
+        wSuiteMask: u16,
+        wProductType: u8,
+        wReserved: u8,
+    }
+
+    #[repr(C)]
+    struct EXCEPTION_RECORD {
+        ExceptionCode: u32,
+        ExceptionFlags: u32,
+        ExceptionRecord: *mut EXCEPTION_RECORD,
+        ExceptionAddress: *mut c_void,
+        NumberParameters: u32,
+        ExceptionInformation: [usize; 15],
+    }
+
+    #[repr(C)]
+    struct EXCEPTION_POINTERS {
+        ExceptionRecord: *mut EXCEPTION_RECORD,
+        ContextRecord: *mut c_void,
     }
 
     #[link(name = "gdi32")]
@@ -1744,8 +1852,48 @@ mod imp {
         }
     }
 
+    fn os_version_info() -> (u32, u32, u32, u16) {
+        static PACKED: AtomicUsize = AtomicUsize::new(0);
+        let cached = PACKED.load(Ordering::Acquire);
+        if cached != 0 {
+            let maj = ((cached >> 48) & 0xFF) as u32;
+            let min = ((cached >> 40) & 0xFF) as u32;
+            let bld = ((cached >> 8) & 0xFFFF_FFFF) as u32;
+            let sp = (cached & 0xFF) as u16;
+            return (maj, min, bld, sp);
+        }
+        static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+        let mut info: RTL_OSVERSIONINFOEXW = unsafe { core::mem::zeroed() };
+        info.dwOSVersionInfoSize = size_of::<RTL_OSVERSIONINFOEXW>() as u32;
+        if let Some(addr) = unsafe { resolve_cached(&SLOT, &NTDLL_W, false, b"RtlGetVersion\0") } {
+            let func: unsafe extern "system" fn(*mut RTL_OSVERSIONINFOEXW) -> i32 =
+                unsafe { core::mem::transmute(addr) };
+            let _ = unsafe { func(&mut info) };
+        }
+        let maj = info.dwMajorVersion.min(0xFF);
+        let min = info.dwMinorVersion.min(0xFF);
+        let bld = info.dwBuildNumber;
+        let sp = info.wServicePackMajor.min(0xFF);
+        let packed = ((maj as usize) << 48)
+            | ((min as usize) << 40)
+            | ((bld as usize) << 8)
+            | (sp as usize);
+        if packed != 0 {
+            PACKED.store(packed, Ordering::Release);
+        }
+        (maj, min, bld, sp)
+    }
+
+    #[inline]
+    fn is_win10_or_later() -> bool {
+        os_version_info().0 >= 10
+    }
+
     #[inline]
     fn has_dcomp() -> bool {
+        if IS_LEGACY_BUILD || !is_win10_or_later() {
+            return false;
+        }
         static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
         unsafe { resolve_cached(&SLOT, &DCOMP_W, true, b"DCompositionCreateDevice\0").is_some() }
     }
@@ -2899,7 +3047,22 @@ mod imp {
         }
     );
 
-    static SYNTHETIC_WARP_ADAPTER: AtomicUsize = AtomicUsize::new(0);
+    static FIRST_FRAME_PRESENTED: AtomicU32 = AtomicU32::new(0);
+    static D3D11_STRUCTURED_OK: AtomicU32 = AtomicU32::new(0);
+
+    fn d3d11_diag_log() -> &'static std::sync::Mutex<String> {
+        static LOG: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
+        LOG.get_or_init(|| std::sync::Mutex::new(String::new()))
+    }
+
+    fn append_d3d11_diag(line: &str) {
+        if let Ok(mut guard) = d3d11_diag_log().lock() {
+            if guard.len() < 4096 {
+                guard.push_str(line);
+                guard.push('\n');
+            }
+        }
+    }
 
     type D3D11CreateDeviceFn = unsafe extern "system" fn(
         *mut c_void,
@@ -2922,6 +3085,597 @@ mod imp {
         }
     }
 
+    unsafe fn exe_dir_wide() -> Option<Vec<u16>> {
+        let mut buf = vec![0u16; 4096];
+        let len = unsafe { GetModuleFileNameW(0, buf.as_mut_ptr(), buf.len() as u32) } as usize;
+        if len == 0 || len >= buf.len() {
+            return None;
+        }
+        let slice = &buf[..len];
+        let sep = slice
+            .iter()
+            .rposition(|&c| c == b'\\' as u16 || c == b'/' as u16)?;
+        Some(slice[..=sep].to_vec())
+    }
+
+    unsafe fn load_app_relative_dll(rel_ascii: &[u8]) -> HMODULE {
+        const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFF_FFFF;
+        let Some(mut path) = (unsafe { exe_dir_wide() }) else {
+            return 0;
+        };
+        path.extend(rel_ascii.iter().map(|&b| b as u16));
+        path.push(0);
+        if unsafe { GetFileAttributesW(path.as_ptr()) } == INVALID_FILE_ATTRIBUTES {
+            return 0;
+        }
+        unsafe { LoadLibraryW(path.as_ptr()) }
+    }
+
+    unsafe fn load_local_warp_module() -> HMODULE {
+        static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+        let cached = SLOT.load(Ordering::Acquire);
+        if cached == MISSING {
+            return 0;
+        }
+        if cached != UNRESOLVED {
+            return cached as HMODULE;
+        }
+        let mut m = unsafe { load_app_relative_dll(b"d3d10warp.dll") };
+        if m == 0 {
+            m = unsafe { load_app_relative_dll(b"x64\\d3d10warp.dll") };
+        }
+        SLOT.store(if m == 0 { MISSING } else { m as usize }, Ordering::Release);
+        m
+    }
+
+    unsafe fn local_d3d11_create_device() -> Option<D3D11CreateDeviceFn> {
+        static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+        let cached = SLOT.load(Ordering::Acquire);
+        if cached == MISSING {
+            return None;
+        }
+        if cached != UNRESOLVED {
+            return Some(unsafe { core::mem::transmute(cached) });
+        }
+        let mut m = unsafe { load_app_relative_dll(b"d3d11.dll") };
+        if m == 0 {
+            m = unsafe { load_app_relative_dll(b"x64\\d3d11.dll") };
+        }
+        let addr = if m != 0 {
+            unsafe { GetProcAddress(m, b"D3D11CreateDevice\0".as_ptr()) as usize }
+        } else {
+            0
+        };
+        SLOT.store(if addr == 0 { MISSING } else { addr }, Ordering::Release);
+        if addr == 0 {
+            None
+        } else {
+            Some(unsafe { core::mem::transmute(addr) })
+        }
+    }
+
+    unsafe fn device_supports_structured_buffers(dev: *mut c_void) -> (u32, bool) {
+        if dev.is_null() {
+            return (0, false);
+        }
+        let vtbl = unsafe { *(dev as *const *const usize) };
+        if vtbl.is_null() {
+            return (0, false);
+        }
+        let get_fl: unsafe extern "system" fn(*mut c_void) -> u32 =
+            unsafe { core::mem::transmute(*vtbl.add(37)) };
+        let check_feat: unsafe extern "system" fn(*mut c_void, i32, *mut c_void, u32) -> HRESULT =
+            unsafe { core::mem::transmute(*vtbl.add(33)) };
+        let fl = unsafe { get_fl(dev) };
+        let mut hw_opts: i32 = 0;
+        let hr = unsafe {
+            check_feat(
+                dev,
+                D3D11_FEATURE_D3D10_X_HARDWARE_OPTIONS,
+                ptr::from_mut(&mut hw_opts).cast(),
+                4,
+            )
+        };
+        let ok = fl >= D3D_FEATURE_LEVEL_11_0 || (hr >= 0 && hw_opts != 0);
+        if ok {
+            D3D11_STRUCTURED_OK.store(1, Ordering::Release);
+        }
+        (fl, ok)
+    }
+
+    unsafe fn call_d3d11_filtered(
+        func: D3D11CreateDeviceFn,
+        adapter: *mut c_void,
+        driver_type: i32,
+        software: HMODULE,
+        flags: u32,
+        feature_levels: *const u32,
+        num_feature_levels: u32,
+        sdk_version: u32,
+        device: *mut *mut c_void,
+        feature_level: *mut u32,
+        immediate_context: *mut *mut c_void,
+    ) -> HRESULT {
+        let hr = unsafe {
+            func(
+                adapter,
+                driver_type,
+                software,
+                flags,
+                feature_levels,
+                num_feature_levels,
+                sdk_version,
+                device,
+                feature_level,
+                immediate_context,
+            )
+        };
+        if hr != E_INVALIDARG || feature_levels.is_null() || num_feature_levels == 0 {
+            return hr;
+        }
+        let slice =
+            unsafe { core::slice::from_raw_parts(feature_levels, num_feature_levels as usize) };
+        let filtered: Vec<u32> = slice
+            .iter()
+            .copied()
+            .filter(|&lvl| lvl <= D3D_FEATURE_LEVEL_11_0)
+            .collect();
+        if filtered.is_empty() || filtered.len() == slice.len() {
+            return hr;
+        }
+        unsafe {
+            func(
+                adapter,
+                driver_type,
+                software,
+                flags,
+                filtered.as_ptr(),
+                filtered.len() as u32,
+                sdk_version,
+                device,
+                feature_level,
+                immediate_context,
+            )
+        }
+    }
+
+    unsafe fn create_warp_or_software_device(
+        func: D3D11CreateDeviceFn,
+        flags: u32,
+        feature_levels: *const u32,
+        num_feature_levels: u32,
+        sdk_version: u32,
+        device_out: *mut *mut c_void,
+        fl_out: *mut u32,
+        ctx_out: *mut *mut c_void,
+    ) -> HRESULT {
+        let mut dev = ptr::null_mut();
+        let mut fl = 0u32;
+        let mut ctx = ptr::null_mut();
+        let want_ctx = !ctx_out.is_null();
+
+        // 1. Try Windows WARP (`D3D_DRIVER_TYPE_WARP = 5`, `d3d10warp.dll`).
+        let warp_hr = unsafe {
+            call_d3d11_filtered(
+                func,
+                ptr::null_mut(),
+                D3D_DRIVER_TYPE_WARP,
+                0,
+                flags,
+                feature_levels,
+                num_feature_levels,
+                sdk_version,
+                &mut dev,
+                &mut fl,
+                if want_ctx { &mut ctx } else { ptr::null_mut() },
+            )
+        };
+        if warp_hr >= 0 && !dev.is_null() {
+            let (actual_fl, sb_ok) = unsafe { device_supports_structured_buffers(dev) };
+            append_d3d11_diag(&format!(
+                "WARP(System32): hr=0x{:08x} fl=0x{:x} structured_buffer={}",
+                warp_hr as u32, actual_fl, sb_ok
+            ));
+            if sb_ok {
+                if !fl_out.is_null() {
+                    unsafe { *fl_out = fl };
+                }
+                if !ctx_out.is_null() {
+                    unsafe { *ctx_out = ctx };
+                }
+                if !device_out.is_null() {
+                    unsafe { *device_out = dev };
+                } else {
+                    unsafe { com_release(dev) };
+                }
+                return warp_hr;
+            }
+        } else {
+            append_d3d11_diag(&format!("WARP(System32): failed hr=0x{:08x}", warp_hr as u32));
+        }
+
+        // 2. If System32 WARP lacks StructuredBuffer (unpatched Win7 SP1 without KB2670838),
+        //    try app-local `d3d10warp.dll` (e.g. Mesa3D x64) via `D3D_DRIVER_TYPE_SOFTWARE`.
+        let local_warp = unsafe { load_local_warp_module() };
+        if local_warp != 0 {
+            let mut sw_dev = ptr::null_mut();
+            let mut sw_fl = 0u32;
+            let mut sw_ctx = ptr::null_mut();
+            let sw_hr = unsafe {
+                call_d3d11_filtered(
+                    func,
+                    ptr::null_mut(),
+                    D3D_DRIVER_TYPE_SOFTWARE,
+                    local_warp,
+                    flags,
+                    feature_levels,
+                    num_feature_levels,
+                    sdk_version,
+                    &mut sw_dev,
+                    &mut sw_fl,
+                    if want_ctx { &mut sw_ctx } else { ptr::null_mut() },
+                )
+            };
+            if sw_hr >= 0 && !sw_dev.is_null() {
+                let (actual_fl, sb_ok) = unsafe { device_supports_structured_buffers(sw_dev) };
+                append_d3d11_diag(&format!(
+                    "WARP(app-local d3d10warp.dll): hr=0x{:08x} fl=0x{:x} structured_buffer={}",
+                    sw_hr as u32, actual_fl, sb_ok
+                ));
+                if sb_ok {
+                    unsafe {
+                        com_release(ctx);
+                        com_release(dev);
+                    }
+                    if !fl_out.is_null() {
+                        unsafe { *fl_out = sw_fl };
+                    }
+                    if !ctx_out.is_null() {
+                        unsafe { *ctx_out = sw_ctx };
+                    }
+                    if !device_out.is_null() {
+                        unsafe { *device_out = sw_dev };
+                    } else {
+                        unsafe { com_release(sw_dev) };
+                    }
+                    return sw_hr;
+                }
+                unsafe {
+                    com_release(sw_ctx);
+                    com_release(sw_dev);
+                }
+            } else {
+                append_d3d11_diag(&format!(
+                    "WARP(app-local d3d10warp.dll): failed hr=0x{:08x}",
+                    sw_hr as u32
+                ));
+            }
+        }
+
+        // 3. Also check app-local `d3d11.dll` if distinct from the already-loaded module.
+        if let Some(local_fn) = unsafe { local_d3d11_create_device() } {
+            if local_fn as usize != func as usize {
+                for drv in [D3D_DRIVER_TYPE_WARP, D3D_DRIVER_TYPE_HARDWARE] {
+                    let mut l_dev = ptr::null_mut();
+                    let mut l_fl = 0u32;
+                    let mut l_ctx = ptr::null_mut();
+                    let l_hr = unsafe {
+                        call_d3d11_filtered(
+                            local_fn,
+                            ptr::null_mut(),
+                            drv,
+                            0,
+                            flags,
+                            feature_levels,
+                            num_feature_levels,
+                            sdk_version,
+                            &mut l_dev,
+                            &mut l_fl,
+                            if want_ctx { &mut l_ctx } else { ptr::null_mut() },
+                        )
+                    };
+                    if l_hr >= 0 && !l_dev.is_null() {
+                        let (actual_fl, sb_ok) =
+                            unsafe { device_supports_structured_buffers(l_dev) };
+                        append_d3d11_diag(&format!(
+                            "Local d3d11.dll(drv={}): hr=0x{:08x} fl=0x{:x} structured_buffer={}",
+                            drv, l_hr as u32, actual_fl, sb_ok
+                        ));
+                        if sb_ok {
+                            unsafe {
+                                com_release(ctx);
+                                com_release(dev);
+                            }
+                            if !fl_out.is_null() {
+                                unsafe { *fl_out = l_fl };
+                            }
+                            if !ctx_out.is_null() {
+                                unsafe { *ctx_out = l_ctx };
+                            }
+                            if !device_out.is_null() {
+                                unsafe { *device_out = l_dev };
+                            } else {
+                                unsafe { com_release(l_dev) };
+                            }
+                            return l_hr;
+                        }
+                        unsafe {
+                            com_release(l_ctx);
+                            com_release(l_dev);
+                        }
+                    }
+                }
+            }
+        }
+
+        if warp_hr >= 0 && !dev.is_null() {
+            if !fl_out.is_null() {
+                unsafe { *fl_out = fl };
+            }
+            if !ctx_out.is_null() {
+                unsafe { *ctx_out = ctx };
+            }
+            if !device_out.is_null() {
+                unsafe { *device_out = dev };
+            } else {
+                unsafe { com_release(dev) };
+            }
+        } else {
+            if !ctx_out.is_null() {
+                unsafe { *ctx_out = ptr::null_mut() };
+            }
+            if !device_out.is_null() {
+                unsafe { *device_out = ptr::null_mut() };
+            }
+        }
+        warp_hr
+    }
+
+    #[repr(C)]
+    struct Win7WarpAdapter1 {
+        vtbl: *const IDXGIAdapter1_Vtbl,
+        refs: AtomicU32,
+        raw_adapter: *mut c_void,
+        parent_factory: *mut c_void,
+    }
+
+    #[inline]
+    unsafe fn is_warp_adapter(adapter: *mut c_void) -> bool {
+        !adapter.is_null()
+            && unsafe { *(adapter as *const usize) } == ptr::addr_of!(WARP_ADAPTER1_VTBL) as usize
+    }
+
+    unsafe extern "system" fn wa1_qi(
+        this: *mut c_void,
+        iid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        if out.is_null() {
+            return E_POINTER;
+        }
+        if iid.is_null() {
+            unsafe { *out = ptr::null_mut() };
+            return E_INVALIDARG;
+        }
+        let g = unsafe { *iid };
+        if g == IID_IUNKNOWN
+            || g == IID_IDXGI_OBJECT
+            || g == IID_IDXGI_ADAPTER
+            || g == IID_IDXGI_ADAPTER1
+        {
+            unsafe { wa1_add_ref(this) };
+            unsafe { *out = this };
+            return S_OK;
+        }
+        let raw = unsafe { (*(this as *const Win7WarpAdapter1)).raw_adapter };
+        if !raw.is_null() {
+            unsafe { ((*com_vtbl::<IUnknown_Vtbl>(raw)).QueryInterface)(raw, iid, out) }
+        } else {
+            unsafe { *out = ptr::null_mut() };
+            E_NOINTERFACE
+        }
+    }
+    unsafe extern "system" fn wa1_add_ref(this: *mut c_void) -> u32 {
+        let me = unsafe { &*(this as *const Win7WarpAdapter1) };
+        me.refs.fetch_add(1, Ordering::Relaxed) + 1
+    }
+    unsafe extern "system" fn wa1_release(this: *mut c_void) -> u32 {
+        let me = unsafe { &*(this as *const Win7WarpAdapter1) };
+        let prev = me.refs.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 {
+            let boxed = unsafe { Box::from_raw(this as *mut Win7WarpAdapter1) };
+            unsafe {
+                com_release(boxed.raw_adapter);
+                com_release(boxed.parent_factory);
+            }
+            0
+        } else {
+            prev - 1
+        }
+    }
+    unsafe extern "system" fn wa1_set_priv(
+        this: *mut c_void,
+        name: *const GUID,
+        size: u32,
+        data: *const c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7WarpAdapter1)).raw_adapter };
+        if !raw.is_null() {
+            unsafe { ((*com_vtbl::<IDXGIObject_Vtbl>(raw)).SetPrivateData)(raw, name, size, data) }
+        } else {
+            S_OK
+        }
+    }
+    unsafe extern "system" fn wa1_set_priv_if(
+        this: *mut c_void,
+        name: *const GUID,
+        unk: *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7WarpAdapter1)).raw_adapter };
+        if !raw.is_null() {
+            unsafe { ((*com_vtbl::<IDXGIObject_Vtbl>(raw)).SetPrivateDataInterface)(raw, name, unk) }
+        } else {
+            S_OK
+        }
+    }
+    unsafe extern "system" fn wa1_get_priv(
+        this: *mut c_void,
+        name: *const GUID,
+        size: *mut u32,
+        data: *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7WarpAdapter1)).raw_adapter };
+        if !raw.is_null() {
+            unsafe { ((*com_vtbl::<IDXGIObject_Vtbl>(raw)).GetPrivateData)(raw, name, size, data) }
+        } else {
+            E_NOTIMPL
+        }
+    }
+    unsafe extern "system" fn wa1_get_parent(
+        this: *mut c_void,
+        iid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        if out.is_null() || iid.is_null() {
+            return E_INVALIDARG;
+        }
+        let me = unsafe { &*(this as *const Win7WarpAdapter1) };
+        if !me.parent_factory.is_null() {
+            let hr = unsafe {
+                ((*com_vtbl::<IUnknown_Vtbl>(me.parent_factory)).QueryInterface)(
+                    me.parent_factory,
+                    iid,
+                    out,
+                )
+            };
+            if hr >= 0 {
+                return hr;
+            }
+        }
+        if !me.raw_adapter.is_null() {
+            return unsafe {
+                ((*com_vtbl::<IDXGIObject_Vtbl>(me.raw_adapter)).GetParent)(me.raw_adapter, iid, out)
+            };
+        }
+        unsafe { *out = ptr::null_mut() };
+        E_NOINTERFACE
+    }
+    unsafe extern "system" fn wa1_enum_outputs(
+        this: *mut c_void,
+        index: u32,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        if out.is_null() {
+            return E_INVALIDARG;
+        }
+        let raw = unsafe { (*(this as *const Win7WarpAdapter1)).raw_adapter };
+        if !raw.is_null() {
+            unsafe { ((*com_vtbl::<IDXGIAdapter_Vtbl>(raw)).EnumOutputs)(raw, index, out) }
+        } else {
+            unsafe { *out = ptr::null_mut() };
+            DXGI_ERROR_NOT_FOUND
+        }
+    }
+    fn fill_default_warp_desc(desc: &mut DXGI_ADAPTER_DESC) {
+        *desc = unsafe { core::mem::zeroed() };
+        let label = b"Microsoft Basic Render Driver (WARP)";
+        for (i, &b) in label.iter().enumerate() {
+            desc.Description[i] = b as u16;
+        }
+        desc.VendorId = 0x1414;
+        desc.DeviceId = 0x008c;
+    }
+    unsafe extern "system" fn wa1_get_desc(
+        this: *mut c_void,
+        out: *mut DXGI_ADAPTER_DESC,
+    ) -> HRESULT {
+        if out.is_null() {
+            return E_INVALIDARG;
+        }
+        let raw = unsafe { (*(this as *const Win7WarpAdapter1)).raw_adapter };
+        if !raw.is_null() {
+            let hr = unsafe { ((*com_vtbl::<IDXGIAdapter_Vtbl>(raw)).GetDesc)(raw, out) };
+            if hr >= 0 {
+                return hr;
+            }
+        }
+        fill_default_warp_desc(unsafe { &mut *out });
+        S_OK
+    }
+    unsafe extern "system" fn wa1_check_if(
+        this: *mut c_void,
+        guid: *const GUID,
+        umd_ver: *mut i64,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7WarpAdapter1)).raw_adapter };
+        if !raw.is_null() {
+            unsafe {
+                ((*com_vtbl::<IDXGIAdapter_Vtbl>(raw)).CheckInterfaceSupport)(raw, guid, umd_ver)
+            }
+        } else {
+            if !umd_ver.is_null() {
+                unsafe { *umd_ver = 0 };
+            }
+            S_OK
+        }
+    }
+    unsafe extern "system" fn wa1_get_desc1(
+        this: *mut c_void,
+        out: *mut DXGI_ADAPTER_DESC1,
+    ) -> HRESULT {
+        if out.is_null() {
+            return E_INVALIDARG;
+        }
+        let raw = unsafe { (*(this as *const Win7WarpAdapter1)).raw_adapter };
+        if !raw.is_null() {
+            if let Some(a1) = unsafe { com_qi(raw, &IID_IDXGI_ADAPTER1) } {
+                let hr = unsafe { ((*com_vtbl::<IDXGIAdapter1_Vtbl>(a1)).GetDesc1)(a1, out) };
+                unsafe { com_release(a1) };
+                if hr >= 0 {
+                    unsafe { (*out).Flags |= DXGI_ADAPTER_FLAG_SOFTWARE };
+                    return S_OK;
+                }
+            }
+        }
+        let mut base_desc: DXGI_ADAPTER_DESC = unsafe { core::mem::zeroed() };
+        let _ = unsafe { wa1_get_desc(this, &mut base_desc) };
+        unsafe {
+            *out = DXGI_ADAPTER_DESC1 {
+                Description: base_desc.Description,
+                VendorId: base_desc.VendorId,
+                DeviceId: base_desc.DeviceId,
+                SubSysId: base_desc.SubSysId,
+                Revision: base_desc.Revision,
+                DedicatedVideoMemory: base_desc.DedicatedVideoMemory,
+                DedicatedSystemMemory: base_desc.DedicatedSystemMemory,
+                SharedSystemMemory: base_desc.SharedSystemMemory,
+                AdapterLuid: base_desc.AdapterLuid,
+                Flags: DXGI_ADAPTER_FLAG_SOFTWARE,
+            };
+        }
+        S_OK
+    }
+
+    static WARP_ADAPTER1_VTBL: IDXGIAdapter1_Vtbl = IDXGIAdapter1_Vtbl {
+        base: IDXGIAdapter_Vtbl {
+            base: IDXGIObject_Vtbl {
+                base: IUnknown_Vtbl {
+                    QueryInterface: wa1_qi,
+                    AddRef: wa1_add_ref,
+                    Release: wa1_release,
+                },
+                SetPrivateData: wa1_set_priv,
+                SetPrivateDataInterface: wa1_set_priv_if,
+                GetPrivateData: wa1_get_priv,
+                GetParent: wa1_get_parent,
+            },
+            EnumOutputs: wa1_enum_outputs,
+            GetDesc: wa1_get_desc,
+            CheckInterfaceSupport: wa1_check_if,
+        },
+        GetDesc1: wa1_get_desc1,
+    };
+
     define_shim!(
         D3D11CreateDevice,
         "__imp_D3D11CreateDevice",
@@ -2941,17 +3695,25 @@ mod imp {
             let Some(func) = (unsafe { raw_d3d11_create_device() }) else {
                 return E_NOINTERFACE;
             };
-            let warp_ptr = SYNTHETIC_WARP_ADAPTER.load(Ordering::Acquire);
-            let (actual_adapter, actual_driver) =
-                if !adapter.is_null() && warp_ptr != 0 && adapter as usize == warp_ptr {
-                    (ptr::null_mut(), D3D_DRIVER_TYPE_WARP)
-                } else {
-                    (adapter, driver_type)
+            if unsafe { is_warp_adapter(adapter) } || driver_type == D3D_DRIVER_TYPE_WARP {
+                return unsafe {
+                    create_warp_or_software_device(
+                        func,
+                        flags,
+                        feature_levels,
+                        num_feature_levels,
+                        sdk_version,
+                        device,
+                        feature_level,
+                        immediate_context,
+                    )
                 };
+            }
             let hr = unsafe {
-                func(
-                    actual_adapter,
-                    actual_driver,
+                call_d3d11_filtered(
+                    func,
+                    adapter,
+                    driver_type,
                     software,
                     flags,
                     feature_levels,
@@ -2962,46 +3724,31 @@ mod imp {
                     immediate_context,
                 )
             };
-            if hr != E_INVALIDARG || feature_levels.is_null() || num_feature_levels == 0 {
-                return hr;
+            if hr >= 0 && !device.is_null() {
+                let created = unsafe { *device };
+                let (fl, sb_ok) = unsafe { device_supports_structured_buffers(created) };
+                append_d3d11_diag(&format!(
+                    "HW D3D11CreateDevice: hr=0x{:08x} fl=0x{:x} structured_buffer={}",
+                    hr as u32, fl, sb_ok
+                ));
+            } else {
+                append_d3d11_diag(&format!(
+                    "HW D3D11CreateDevice: failed hr=0x{:08x}",
+                    hr as u32
+                ));
             }
-            let slice =
-                unsafe { core::slice::from_raw_parts(feature_levels, num_feature_levels as usize) };
-            let filtered: Vec<u32> = slice
-                .iter()
-                .copied()
-                .filter(|&lvl| lvl <= D3D_FEATURE_LEVEL_11_0)
-                .collect();
-            if filtered.is_empty() || filtered.len() == slice.len() {
-                return hr;
-            }
-            unsafe {
-                func(
-                    actual_adapter,
-                    actual_driver,
-                    software,
-                    flags,
-                    filtered.as_ptr(),
-                    filtered.len() as u32,
-                    sdk_version,
-                    device,
-                    feature_level,
-                    immediate_context,
-                )
-            }
+            hr
         }
     );
 
-    unsafe fn synthesize_warp_adapter() -> Option<*mut c_void> {
+    unsafe fn synthesize_warp_adapter(parent_factory: *mut c_void) -> Option<*mut c_void> {
         let func = unsafe { raw_d3d11_create_device()? };
         let levels = [D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1];
         let mut device = ptr::null_mut();
         let mut chosen = 0u32;
         let hr = unsafe {
-            func(
-                ptr::null_mut(),
-                D3D_DRIVER_TYPE_WARP,
-                0,
+            create_warp_or_software_device(
+                func,
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                 levels.as_ptr(),
                 levels.len() as u32,
@@ -3014,22 +3761,24 @@ mod imp {
         if hr < 0 || device.is_null() {
             return None;
         }
-        let dxgi_dev = unsafe { com_qi(device, &IID_IDXGI_DEVICE) };
-        unsafe { com_release(device) };
-        let dxgi_dev = dxgi_dev?;
         let mut raw_adapter = ptr::null_mut();
-        let hr = unsafe {
-            ((*com_vtbl::<IDXGIDevice_Vtbl>(dxgi_dev)).GetAdapter)(dxgi_dev, &mut raw_adapter)
-        };
-        unsafe { com_release(dxgi_dev) };
-        if hr < 0 || raw_adapter.is_null() {
-            return None;
+        if let Some(dxgi_dev) = unsafe { com_qi(device, &IID_IDXGI_DEVICE) } {
+            let _ = unsafe {
+                ((*com_vtbl::<IDXGIDevice_Vtbl>(dxgi_dev)).GetAdapter)(dxgi_dev, &mut raw_adapter)
+            };
+            unsafe { com_release(dxgi_dev) };
         }
-        let adapter1 = unsafe { com_qi(raw_adapter, &IID_IDXGI_ADAPTER1) };
-        unsafe { com_release(raw_adapter) };
-        let adapter1 = adapter1?;
-        SYNTHETIC_WARP_ADAPTER.store(adapter1 as usize, Ordering::Release);
-        Some(adapter1)
+        unsafe { com_release(device) };
+        if !parent_factory.is_null() {
+            unsafe { com_add_ref(parent_factory) };
+        }
+        let wrapped = Box::into_raw(Box::new(Win7WarpAdapter1 {
+            vtbl: &WARP_ADAPTER1_VTBL,
+            refs: AtomicU32::new(1),
+            raw_adapter,
+            parent_factory,
+        }));
+        Some(wrapped.cast())
     }
 
     #[repr(C)]
@@ -3121,7 +3870,11 @@ mod imp {
     }
     unsafe extern "system" fn sc1_present(this: *mut c_void, sync: u32, flags: u32) -> HRESULT {
         let raw = unsafe { (*(this as *const Win7DxgiSwapChain1)).raw };
-        unsafe { ((*com_vtbl::<IDXGISwapChain_Vtbl>(raw)).Present)(raw, sync, flags) }
+        let hr = unsafe { ((*com_vtbl::<IDXGISwapChain_Vtbl>(raw)).Present)(raw, sync, flags) };
+        if hr >= 0 {
+            FIRST_FRAME_PRESENTED.store(1, Ordering::Release);
+        }
+        hr
     }
     unsafe extern "system" fn sc1_get_buffer(
         this: *mut c_void,
@@ -3164,7 +3917,16 @@ mod imp {
         flags: u32,
     ) -> HRESULT {
         let raw = unsafe { (*(this as *const Win7DxgiSwapChain1)).raw };
-        unsafe { ((*com_vtbl::<IDXGISwapChain_Vtbl>(raw)).ResizeBuffers)(raw, 0, w, h, fmt, flags) }
+        unsafe {
+            ((*com_vtbl::<IDXGISwapChain_Vtbl>(raw)).ResizeBuffers)(
+                raw,
+                0,
+                w.max(1),
+                h.max(1),
+                fmt,
+                flags,
+            )
+        }
     }
     unsafe extern "system" fn sc1_resize_target(
         this: *mut c_void,
@@ -3393,11 +4155,62 @@ mod imp {
         let raw = unsafe { (*(this as *const Win7DxgiFactory6)).raw };
         unsafe { ((*com_vtbl::<IDXGIObject_Vtbl>(raw)).GetParent)(raw, iid, out) }
     }
+    unsafe fn resolve_factory_for_device(
+        device: *mut c_void,
+        fallback_raw_factory: *mut c_void,
+    ) -> (*mut c_void, bool) {
+        if let Some(dxgi_dev) = unsafe { com_qi(device, &IID_IDXGI_DEVICE) } {
+            let mut adapter = ptr::null_mut();
+            let hr = unsafe {
+                ((*com_vtbl::<IDXGIDevice_Vtbl>(dxgi_dev)).GetAdapter)(dxgi_dev, &mut adapter)
+            };
+            unsafe { com_release(dxgi_dev) };
+            if hr >= 0 && !adapter.is_null() {
+                let mut dev_factory = ptr::null_mut();
+                let p_hr = unsafe {
+                    ((*com_vtbl::<IDXGIObject_Vtbl>(adapter)).GetParent)(
+                        adapter,
+                        &IID_IDXGI_FACTORY,
+                        &mut dev_factory,
+                    )
+                };
+                unsafe { com_release(adapter) };
+                if p_hr >= 0 && !dev_factory.is_null() {
+                    if unsafe { *(dev_factory as *const usize) }
+                        == ptr::addr_of!(FACTORY6_VTBL) as usize
+                    {
+                        let inner = unsafe { (*(dev_factory as *const Win7DxgiFactory6)).raw };
+                        unsafe {
+                            com_add_ref(inner);
+                            com_release(dev_factory);
+                        }
+                        return (inner, true);
+                    }
+                    return (dev_factory, true);
+                }
+            }
+        }
+        (fallback_raw_factory, false)
+    }
+
     unsafe extern "system" fn f6_enum_adapters(
         this: *mut c_void,
         index: u32,
         out: *mut *mut c_void,
     ) -> HRESULT {
+        if out.is_null() {
+            return E_INVALIDARG;
+        }
+        if std::env::var_os("HORIZON_FORCE_WARP").is_some() {
+            if index == 0 {
+                if let Some(warp_adapter) = unsafe { synthesize_warp_adapter(this) } {
+                    unsafe { *out = warp_adapter };
+                    return S_OK;
+                }
+            }
+            unsafe { *out = ptr::null_mut() };
+            return DXGI_ERROR_NOT_FOUND;
+        }
         let me = unsafe { &*(this as *const Win7DxgiFactory6) };
         let hr = unsafe {
             ((*com_vtbl::<IDXGIFactory_Vtbl>(me.raw)).EnumAdapters)(me.raw, index, out)
@@ -3408,7 +4221,7 @@ mod imp {
         let slot = me.warp_slot.load(Ordering::Acquire);
         if hr == DXGI_ERROR_NOT_FOUND && (slot == u32::MAX || slot == index) {
             me.warp_slot.store(index, Ordering::Release);
-            if let Some(warp_adapter) = unsafe { synthesize_warp_adapter() } {
+            if let Some(warp_adapter) = unsafe { synthesize_warp_adapter(this) } {
                 unsafe { *out = warp_adapter };
                 return S_OK;
             }
@@ -3421,7 +4234,9 @@ mod imp {
         flags: u32,
     ) -> HRESULT {
         let raw = unsafe { (*(this as *const Win7DxgiFactory6)).raw };
-        unsafe { ((*com_vtbl::<IDXGIFactory_Vtbl>(raw)).MakeWindowAssociation)(raw, hwnd, flags) }
+        let hr =
+            unsafe { ((*com_vtbl::<IDXGIFactory_Vtbl>(raw)).MakeWindowAssociation)(raw, hwnd, flags) };
+        if hr < 0 { S_OK } else { hr }
     }
     unsafe extern "system" fn f6_get_win_assoc(this: *mut c_void, hwnd: *mut HWND) -> HRESULT {
         let raw = unsafe { (*(this as *const Win7DxgiFactory6)).raw };
@@ -3434,7 +4249,19 @@ mod imp {
         out: *mut *mut c_void,
     ) -> HRESULT {
         let raw = unsafe { (*(this as *const Win7DxgiFactory6)).raw };
-        unsafe { ((*com_vtbl::<IDXGIFactory_Vtbl>(raw)).CreateSwapChain)(raw, device, desc, out) }
+        let (target_factory, owns_ref) = unsafe { resolve_factory_for_device(device, raw) };
+        let hr = unsafe {
+            ((*com_vtbl::<IDXGIFactory_Vtbl>(target_factory)).CreateSwapChain)(
+                target_factory,
+                device,
+                desc,
+                out,
+            )
+        };
+        if owns_ref {
+            unsafe { com_release(target_factory) };
+        }
+        hr
     }
     unsafe extern "system" fn f6_create_sw(
         this: *mut c_void,
@@ -3449,8 +4276,35 @@ mod imp {
         index: u32,
         out: *mut *mut c_void,
     ) -> HRESULT {
-        let raw = unsafe { (*(this as *const Win7DxgiFactory6)).raw };
-        unsafe { ((*com_vtbl::<IDXGIFactory1_Vtbl>(raw)).EnumAdapters1)(raw, index, out) }
+        if out.is_null() {
+            return E_INVALIDARG;
+        }
+        if std::env::var_os("HORIZON_FORCE_WARP").is_some() {
+            if index == 0 {
+                if let Some(warp_adapter) = unsafe { synthesize_warp_adapter(this) } {
+                    unsafe { *out = warp_adapter };
+                    return S_OK;
+                }
+            }
+            unsafe { *out = ptr::null_mut() };
+            return DXGI_ERROR_NOT_FOUND;
+        }
+        let me = unsafe { &*(this as *const Win7DxgiFactory6) };
+        let hr = unsafe {
+            ((*com_vtbl::<IDXGIFactory1_Vtbl>(me.raw)).EnumAdapters1)(me.raw, index, out)
+        };
+        if hr >= 0 {
+            return hr;
+        }
+        let slot = me.warp_slot.load(Ordering::Acquire);
+        if hr == DXGI_ERROR_NOT_FOUND && (slot == u32::MAX || slot == index) {
+            me.warp_slot.store(index, Ordering::Release);
+            if let Some(warp_adapter) = unsafe { synthesize_warp_adapter(this) } {
+                unsafe { *out = warp_adapter };
+                return S_OK;
+            }
+        }
+        hr
     }
     unsafe extern "system" fn f6_is_current(this: *mut c_void) -> BOOL {
         let raw = unsafe { (*(this as *const Win7DxgiFactory6)).raw };
@@ -3494,8 +4348,8 @@ mod imp {
         let d = unsafe { *desc };
         let legacy = DXGI_SWAP_CHAIN_DESC {
             BufferDesc: DXGI_MODE_DESC {
-                Width: d.Width,
-                Height: d.Height,
+                Width: d.Width.max(1),
+                Height: d.Height.max(1),
                 RefreshRate: DXGI_RATIONAL {
                     Numerator: 0,
                     Denominator: 0,
@@ -3512,16 +4366,30 @@ mod imp {
             SwapEffect: 0,
             Flags: d.Flags,
         };
+        let (target_factory, owns_ref) = unsafe { resolve_factory_for_device(device, me.raw) };
         let mut raw_sc = ptr::null_mut();
         let hr = unsafe {
-            ((*com_vtbl::<IDXGIFactory_Vtbl>(me.raw)).CreateSwapChain)(
-                me.raw,
+            ((*com_vtbl::<IDXGIFactory_Vtbl>(target_factory)).CreateSwapChain)(
+                target_factory,
                 device,
                 &legacy,
                 &mut raw_sc,
             )
         };
+        if hr >= 0 && !raw_sc.is_null() {
+            let _ = unsafe {
+                ((*com_vtbl::<IDXGIFactory_Vtbl>(target_factory)).MakeWindowAssociation)(
+                    target_factory,
+                    hwnd,
+                    DXGI_MWA_NO_ALT_ENTER,
+                )
+            };
+        }
+        if owns_ref {
+            unsafe { com_release(target_factory) };
+        }
         if hr < 0 || raw_sc.is_null() {
+            append_d3d11_diag(&format!("CreateSwapChain failed: hr=0x{:08x}", hr as u32));
             unsafe { *out = ptr::null_mut() };
             return hr;
         }
@@ -3597,14 +4465,14 @@ mod imp {
         E_NOTIMPL
     }
     unsafe extern "system" fn f6_enum_warp(
-        _: *mut c_void,
+        this: *mut c_void,
         iid: *const GUID,
         out: *mut *mut c_void,
     ) -> HRESULT {
         if out.is_null() || iid.is_null() {
             return E_INVALIDARG;
         }
-        if let Some(warp) = unsafe { synthesize_warp_adapter() } {
+        if let Some(warp) = unsafe { synthesize_warp_adapter(this) } {
             let hr = unsafe { ((*com_vtbl::<IUnknown_Vtbl>(warp)).QueryInterface)(warp, iid, out) };
             unsafe { com_release(warp) };
             hr
@@ -4464,7 +5332,343 @@ mod imp {
         }
     );
 
+    fn shim_addr_for_import_name(name: &[u8]) -> Option<usize> {
+        match name {
+            b"DWriteCreateFactory" => Some(dwrite::IMP_DWRITE_CREATE_FACTORY as usize),
+            b"D3D11CreateDevice" => Some(IMP_D3D11_CREATE_DEVICE as usize),
+            b"CreateDXGIFactory2" => Some(IMP_CREATE_DXGI_FACTORY_2 as usize),
+            b"DCompositionCreateDevice" => Some(IMP_DCOMPOSITION_CREATE_DEVICE as usize),
+            b"DXGIGetDebugInterface1" => Some(IMP_DXGI_GET_DEBUG_INTERFACE_1 as usize),
+            b"CoCreateInstance" => Some(IMP_CO_CREATE_INSTANCE as usize),
+            b"CoInitializeEx" => Some(IMP_CO_INITIALIZE_EX as usize),
+            b"CoInitialize" => Some(IMP_CO_INITIALIZE as usize),
+            b"CoUninitialize" => Some(IMP_CO_UNINITIALIZE as usize),
+            b"CoCreateFreeThreadedMarshaler" => Some(IMP_CO_CREATE_FREE_THREADED_MARSHALER as usize),
+            b"CoIncrementMTAUsage" => Some(IMP_CO_INCREMENT_MTA_USAGE as usize),
+            b"GetCurrentPackageFullName" => Some(IMP_GET_CURRENT_PACKAGE_FULL_NAME as usize),
+            b"GetDpiForMonitor" => Some(IMP_GET_DPI_FOR_MONITOR as usize),
+            b"GetDpiForWindow" => Some(IMP_GET_DPI_FOR_WINDOW as usize),
+            b"GetDpiForSystem" => Some(IMP_GET_DPI_FOR_SYSTEM as usize),
+            b"GetSystemMetricsForDpi" => Some(IMP_GET_SYSTEM_METRICS_FOR_DPI as usize),
+            b"AdjustWindowRectExForDpi" => Some(IMP_ADJUST_WINDOW_RECT_EX_FOR_DPI as usize),
+            b"EnableNonClientDpiScaling" => Some(IMP_ENABLE_NON_CLIENT_DPI_SCALING as usize),
+            b"SetProcessDpiAwareness" => Some(IMP_SET_PROCESS_DPI_AWARENESS as usize),
+            b"SetProcessDpiAwarenessContext" => {
+                Some(IMP_SET_PROCESS_DPI_AWARENESS_CONTEXT as usize)
+            }
+            b"GetPointerType" => Some(IMP_GET_POINTER_TYPE as usize),
+            b"RegisterSuspendResumeNotification" => {
+                Some(IMP_REGISTER_SUSPEND_RESUME_NOTIFICATION as usize)
+            }
+            b"UnregisterSuspendResumeNotification" => {
+                Some(IMP_UNREGISTER_SUSPEND_RESUME_NOTIFICATION as usize)
+            }
+            b"UiaGetReservedNotSupportedValue" => {
+                Some(IMP_UIA_GET_RESERVED_NOT_SUPPORTED_VALUE as usize)
+            }
+            b"UiaGetReservedMixedAttributeValue" => {
+                Some(IMP_UIA_GET_RESERVED_MIXED_ATTRIBUTE_VALUE as usize)
+            }
+            b"WaitOnAddress" => Some(IMP_WAIT_ON_ADDRESS as usize),
+            b"WakeByAddressSingle" => Some(IMP_WAKE_BY_ADDRESS_SINGLE as usize),
+            b"WakeByAddressAll" => Some(IMP_WAKE_BY_ADDRESS_ALL as usize),
+            b"ProcessPrng" => Some(IMP_PROCESS_PRNG as usize),
+            b"GetTempPath2W" => Some(IMP_GET_TEMP_PATH_2W as usize),
+            b"GetSystemTimePreciseAsFileTime" => {
+                Some(IMP_GET_SYSTEM_TIME_PRECISE_AS_FILE_TIME as usize)
+            }
+            b"GetHostNameW" => Some(IMP_GET_HOST_NAME_W as usize),
+            b"u_strlen" => Some(IMP_U_STRLEN as usize),
+            _ => None,
+        }
+    }
+
+    unsafe fn patch_main_module_iat() {
+        const PAGE_READWRITE: u32 = 0x04;
+        let base = unsafe { GetModuleHandleW(ptr::null()) } as *mut u8;
+        if base.is_null() {
+            return;
+        }
+        let dos_magic = unsafe { ptr::read_unaligned(base as *const u16) };
+        if dos_magic != 0x5A4D {
+            return;
+        }
+        let lfanew = unsafe { ptr::read_unaligned(base.add(0x3C) as *const i32) };
+        if lfanew <= 0 || (lfanew as usize) > 0x10_0000 {
+            return;
+        }
+        let nt = unsafe { base.add(lfanew as usize) };
+        if unsafe { ptr::read_unaligned(nt as *const u32) } != 0x0000_4550 {
+            return;
+        }
+        let opt = unsafe { nt.add(24) };
+        if unsafe { ptr::read_unaligned(opt as *const u16) } != 0x020B {
+            return;
+        }
+        let size_of_image = unsafe { ptr::read_unaligned(opt.add(56) as *const u32) } as usize;
+        let num_dirs = unsafe { ptr::read_unaligned(opt.add(108) as *const u32) };
+        if num_dirs <= 1 || size_of_image < 0x1000 {
+            return;
+        }
+        let import_rva = unsafe { ptr::read_unaligned(opt.add(112 + 8) as *const u32) } as usize;
+        if import_rva == 0 || import_rva + 20 > size_of_image {
+            return;
+        }
+        let mut desc_rva = import_rva;
+        while desc_rva + 20 <= size_of_image {
+            let desc = unsafe { base.add(desc_rva) };
+            let orig_thunk = unsafe { ptr::read_unaligned(desc as *const u32) } as usize;
+            let name_rva = unsafe { ptr::read_unaligned(desc.add(12) as *const u32) } as usize;
+            let first_thunk = unsafe { ptr::read_unaligned(desc.add(16) as *const u32) } as usize;
+            if orig_thunk == 0 && name_rva == 0 && first_thunk == 0 {
+                break;
+            }
+            if orig_thunk != 0 && first_thunk != 0 {
+                let mut idx = 0usize;
+                loop {
+                    let int_pos = orig_thunk.saturating_add(idx.saturating_mul(8));
+                    let iat_pos = first_thunk.saturating_add(idx.saturating_mul(8));
+                    if int_pos + 8 > size_of_image || iat_pos + 8 > size_of_image {
+                        break;
+                    }
+                    let entry = unsafe { ptr::read_unaligned(base.add(int_pos) as *const u64) };
+                    if entry == 0 {
+                        break;
+                    }
+                    if (entry & (1u64 << 63)) == 0 {
+                        let hint_name = (entry & 0x7FFF_FFFF) as usize;
+                        if hint_name + 3 < size_of_image {
+                            let str_start = hint_name + 2;
+                            let max_len = (size_of_image - str_start).min(256);
+                            let raw_bytes = unsafe {
+                                core::slice::from_raw_parts(base.add(str_start), max_len)
+                            };
+                            if let Some(nul) = raw_bytes.iter().position(|&b| b == 0) {
+                                if let Some(shim_fn) = shim_addr_for_import_name(&raw_bytes[..nul])
+                                {
+                                    let slot = unsafe { base.add(iat_pos) as *mut usize };
+                                    if unsafe { *slot } != shim_fn {
+                                        let mut old_prot = 0u32;
+                                        if unsafe {
+                                            VirtualProtect(
+                                                slot.cast(),
+                                                size_of::<usize>(),
+                                                PAGE_READWRITE,
+                                                &mut old_prot,
+                                            )
+                                        } != 0
+                                        {
+                                            unsafe { *slot = shim_fn };
+                                            let mut dummy = 0u32;
+                                            let _ = unsafe {
+                                                VirtualProtect(
+                                                    slot.cast(),
+                                                    size_of::<usize>(),
+                                                    old_prot,
+                                                    &mut dummy,
+                                                )
+                                            };
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    idx += 1;
+                }
+            }
+            desc_rva += 20;
+        }
+    }
+
+    static MAIN_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+
+    fn write_crash_log(report: &str) -> String {
+        let candidates = [
+            std::env::current_exe().ok().and_then(|p| {
+                p.parent()
+                    .map(|dir| dir.join("horizon-launcher-crash.log"))
+            }),
+            Some(std::env::temp_dir().join("horizon-launcher-crash.log")),
+        ];
+        for path in candidates.into_iter().flatten() {
+            if std::fs::write(&path, report).is_ok() {
+                return path.display().to_string();
+            }
+        }
+        String::from("horizon-launcher-crash.log")
+    }
+
+    fn is_interactive_gui() -> bool {
+        std::env::args_os().len() <= 1 && std::env::var_os("CI").is_none()
+    }
+
+    fn show_error_dialog(title: &str, body: &str) {
+        if !is_interactive_gui() {
+            return;
+        }
+        let mut title_w: Vec<u16> = title.encode_utf16().collect();
+        title_w.push(0);
+        let mut body_w: Vec<u16> = body.encode_utf16().collect();
+        body_w.push(0);
+        unsafe {
+            let _ = MessageBoxW(0, body_w.as_ptr(), title_w.as_ptr(), 0x0001_0010);
+        }
+    }
+
+    fn format_d3d11_diag_snapshot() -> String {
+        d3d11_diag_log()
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    unsafe fn describe_address_module(addr: *const c_void) -> String {
+        const FLAGS: u32 = 0x0000_0002 | 0x0000_0004; // UNCHANGED_REFCOUNT | FROM_ADDRESS
+        let mut hmod: HMODULE = 0;
+        if addr.is_null()
+            || unsafe { GetModuleHandleExW(FLAGS, addr as *const u16, &mut hmod) } == 0
+            || hmod == 0
+        {
+            return format!("0x{:016x}", addr as usize);
+        }
+        let mut buf = [0u16; 512];
+        let len = unsafe { GetModuleFileNameW(hmod, buf.as_mut_ptr(), buf.len() as u32) } as usize;
+        let name = if len > 0 && len < buf.len() {
+            let full = String::from_utf16_lossy(&buf[..len]);
+            full.rsplit(['\\', '/']).next().unwrap_or(&full).to_string()
+        } else {
+            String::from("<module>")
+        };
+        let rva = (addr as usize).wrapping_sub(hmod as usize);
+        format!("{name}+0x{rva:x} (0x{:016x})", addr as usize)
+    }
+
+    unsafe extern "system" fn unhandled_seh_filter(info: *const EXCEPTION_POINTERS) -> i32 {
+        if info.is_null() {
+            return 0;
+        }
+        let rec_ptr = unsafe { (*info).ExceptionRecord };
+        if rec_ptr.is_null() {
+            return 0;
+        }
+        let code = unsafe { (*rec_ptr).ExceptionCode };
+        // Let C++/Rust unwind exceptions and debug/thread-name notifications pass through.
+        if code < 0x8000_0000 || code == 0xE06D_7363 {
+            return 0;
+        }
+        let addr = unsafe { (*rec_ptr).ExceptionAddress };
+        let where_str = unsafe { describe_address_module(addr) };
+        let (maj, min, bld, sp) = os_version_info();
+        let extra = if code == 0xC000_0005 && unsafe { (*rec_ptr).NumberParameters } >= 2 {
+            let op = unsafe { (*rec_ptr).ExceptionInformation[0] };
+            let target = unsafe { (*rec_ptr).ExceptionInformation[1] };
+            format!("access_violation(op={op}, target=0x{target:016x})")
+        } else {
+            String::new()
+        };
+        let diag = format_d3d11_diag_snapshot();
+        let report = format!(
+            "Horizon Launcher Legacy Crash Report (SEH)\n\
+             OS: Windows {maj}.{min}.{bld} SP{sp} (legacy_build={IS_LEGACY_BUILD})\n\
+             Exception: 0x{code:08x} at {where_str} {extra}\n\
+             FirstFramePresented: {}\n\
+             D3D11Diagnostics:\n{diag}\n",
+            FIRST_FRAME_PRESENTED.load(Ordering::Acquire) != 0,
+        );
+        let log_path = write_crash_log(&report);
+        show_error_dialog(
+            "Horizon Launcher — Startup Error",
+            &format!(
+                "Horizon Launcher encountered an unexpected native error on startup.\n\n\
+                 Exception: 0x{code:08x} at {where_str}\n\
+                 {extra}\n\n\
+                 Details were written to:\n{log_path}"
+            ),
+        );
+        1 // EXCEPTION_EXECUTE_HANDLER (prevents WerFault.exe hang)
+    }
+
+    fn install_crash_diagnostics() {
+        static INSTALLED: AtomicU32 = AtomicU32::new(0);
+        if INSTALLED.swap(1, Ordering::AcqRel) != 0 {
+            return;
+        }
+        MAIN_THREAD_ID.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
+        unsafe {
+            SetErrorMode(0x0001 | 0x0002);
+            let _ = SetUnhandledExceptionFilter(Some(unhandled_seh_filter));
+        }
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |panic_info| {
+            if unsafe { GetCurrentThreadId() } != MAIN_THREAD_ID.load(Ordering::Acquire) {
+                prev_hook(panic_info);
+                return;
+            }
+            let payload = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+                s.clone()
+            } else {
+                String::from("unknown panic payload")
+            };
+            let location = panic_info
+                .location()
+                .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                .unwrap_or_else(|| String::from("<unknown>"));
+            let (maj, min, bld, sp) = os_version_info();
+            let diag = format_d3d11_diag_snapshot();
+            let bt = std::backtrace::Backtrace::force_capture();
+            let report = format!(
+                "Horizon Launcher Legacy Crash Report (Panic)\n\
+                 OS: Windows {maj}.{min}.{bld} SP{sp} (legacy_build={IS_LEGACY_BUILD})\n\
+                 Location: {location}\n\
+                 Message: {payload}\n\
+                 FirstFramePresented: {}\n\
+                 D3D11Diagnostics:\n{diag}\n\
+                 Backtrace:\n{bt}\n",
+                FIRST_FRAME_PRESENTED.load(Ordering::Acquire) != 0,
+            );
+            let log_path = write_crash_log(&report);
+            let needs_d3d11_hint = D3D11_STRUCTURED_OK.load(Ordering::Acquire) == 0
+                && (payload.contains("DirectX")
+                    || payload.contains("graphics adapter")
+                    || payload.contains("StructuredBuffer")
+                    || payload.contains("window"));
+            if needs_d3d11_hint {
+                show_error_dialog(
+                    "Horizon Launcher — DirectX 11 Update Needed (Windows 7)",
+                    &format!(
+                        "Your graphics driver does not support Direct3D 11 Shader Model 4.1 StructuredBuffer, \
+                         and Windows 7's built-in software renderer (d3d10warp.dll) is not updated.\n\n\
+                         To fix this on 64-bit Windows 7 SP1, do EITHER of the following:\n\
+                         1. Install Microsoft's Platform Update for Windows 7 (KB2670838) and restart, OR\n\
+                         2. Copy 64-bit d3d10warp.dll (for example from mesa3d x64) into the same folder as horizon-launcher-legacy.exe.\n\n\
+                         Technical details saved to:\n{log_path}"
+                    ),
+                );
+            } else {
+                show_error_dialog(
+                    "Horizon Launcher — Startup Error",
+                    &format!(
+                        "Horizon Launcher stopped with an error:\n\n\
+                         {payload}\n({location})\n\n\
+                         Details were written to:\n{log_path}"
+                    ),
+                );
+            }
+            prev_hook(panic_info);
+            if FIRST_FRAME_PRESENTED.load(Ordering::Acquire) == 0 && is_interactive_gui() {
+                unsafe {
+                    let _ = TerminateProcess(GetCurrentProcess(), 101);
+                }
+            }
+        }));
+    }
+
     pub fn init() {
+        static INIT_ONCE: AtomicU32 = AtomicU32::new(0);
+        let first_init = INIT_ONCE.swap(1, Ordering::AcqRel) == 0;
         let refs: &[usize] = &[
             ptr::addr_of!(IMP_GET_SYSTEM_TIME_PRECISE_AS_FILE_TIME) as usize,
             ptr::addr_of!(IMP_GET_TEMP_PATH_2W) as usize,
@@ -4533,10 +5737,17 @@ mod imp {
             ptr::addr_of!(IMP_CREATE_DIRECT3D11_SURFACE_FROM_DXGI_SURFACE) as usize,
         ];
         core::hint::black_box(refs);
+        if first_init {
+            unsafe { patch_main_module_iat() };
+        }
         if (IS_LEGACY_BUILD || !has_dcomp())
             && std::env::var_os("GPUI_DISABLE_DIRECT_COMPOSITION").is_none()
         {
             std::env::set_var("GPUI_DISABLE_DIRECT_COMPOSITION", "1");
+        }
+        #[cfg(not(test))]
+        if first_init && (IS_LEGACY_BUILD || !is_win10_or_later()) {
+            install_crash_diagnostics();
         }
     }
 }
@@ -4614,7 +5825,13 @@ mod tests {
         let word = size_of::<usize>();
         assert_eq!(size_of::<IUnknown_Vtbl>(), 3 * word);
         assert_eq!(size_of::<IDXGIObject_Vtbl>(), 7 * word);
+        assert_eq!(size_of::<IDXGIAdapter_Vtbl>(), 10 * word);
+        assert_eq!(size_of::<IDXGIAdapter1_Vtbl>(), 11 * word);
         assert_eq!(size_of::<IDXGIDevice_Vtbl>(), 12 * word);
+        if word == 8 {
+            assert_eq!(size_of::<DXGI_ADAPTER_DESC>(), 304);
+            assert_eq!(size_of::<DXGI_ADAPTER_DESC1>(), 312);
+        }
         assert_eq!(size_of::<IDXGIDeviceSubObject_Vtbl>(), 8 * word);
         assert_eq!(size_of::<IDXGIFactory_Vtbl>(), 12 * word);
         assert_eq!(size_of::<IDXGIFactory1_Vtbl>(), 14 * word);

@@ -4278,13 +4278,12 @@ pub unsafe extern "system" fn DWriteCreateFactory(
         unsafe { *out = ptr::null_mut() };
         return hr1;
     }
-    static LOADER_REGISTERED: OnceLock<()> = OnceLock::new();
-    LOADER_REGISTERED.get_or_init(|| unsafe {
+    unsafe {
         let _ = ((*com_vtbl::<IDWriteFactory_Vtbl>(raw_factory)).RegisterFontCollectionLoader)(
             raw_factory,
             ptr::addr_of!(GLOBAL_COLLECTION_LOADER).cast_mut().cast(),
         );
-    });
+    }
     let wrapped = Box::into_raw(Box::new(Win7DWriteFactory5 {
         vtbl: &DWRITE_FACTORY5_VTBL,
         refs: AtomicU32::new(1),
