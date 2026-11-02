@@ -7323,7 +7323,6 @@ mod tests {
             _: f32,
             _: f32,
             _: *const c_void,
-            _: i32,
             _: *mut c_void,
         ) -> HRESULT {
             S_OK
