@@ -64,6 +64,7 @@ jobs:
         with:
           workspaces: launcher
           shared-key: launcher-windows
+          shared-key: launcher-windows
       - name: Run unit tests
         run: |
           cargo test --release --locked > "$RUNNER_TEMP/test.log" 2>&1 || {

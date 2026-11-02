@@ -416,11 +416,25 @@ fn launcher_releases_in(list: &serde_json::Value) -> Vec<Release> {
     })
 }
 
+fn parse_launcher_releases(list: &serde_json::Value) -> Vec<Release> {
+    let primary = launcher_asset();
+    let mut out = parse_releases(list, primary, is_launcher_tag);
+    if primary.is_some() && primary == LAUNCHER_LEGACY_ASSET {
+        let fallback = parse_releases(list, LAUNCHER_ASSET, is_launcher_tag);
+        for (r, fb) in out.iter_mut().zip(fallback) {
+            if r.asset.is_none() {
+                r.asset = fb.asset;
+            }
+        }
+    }
+    out
+}
+
 fn launcher_releases_in_with(
     list: &serde_json::Value,
     json: impl Fn(String) -> Result<serde_json::Value, String>,
 ) -> Vec<Release> {
-    let found = parse_releases(list, launcher_asset(), is_launcher_tag);
+    let found = parse_launcher_releases(list);
     if found.iter().any(|r| r.asset.is_some()) {
         return found;
     }
@@ -436,11 +450,7 @@ fn launcher_releases_in_with(
     }
     for tag in tags.into_iter().take(3) {
         if let Ok(release) = json(format!("{api}/releases/tags/{tag}")) {
-            let one = parse_releases(
-                &serde_json::json!([release]),
-                launcher_asset(),
-                is_launcher_tag,
-            );
+            let one = parse_launcher_releases(&serde_json::json!([release]));
             if one.iter().any(|r| r.asset.is_some()) {
                 return one;
             }
@@ -2903,7 +2913,11 @@ pub fn self_update(release: &Release, progress: impl Fn(f32)) -> Result<(), Stri
         progress(1.0);
         return Ok(());
     }
-    let sha256 = signed_digest(&release.tag, launcher_asset().unwrap_or_default())?;
+    let asset_name = match (launcher_asset(), LAUNCHER_LEGACY_ASSET, LAUNCHER_ASSET) {
+        (Some(p), Some(leg), Some(s)) if p == leg && url.ends_with(s) => Some(s),
+        (p, _, _) => p,
+    };
+    let sha256 = signed_digest(&release.tag, asset_name.unwrap_or_default())?;
     let work = data_dir().join(".launcher-update");
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(&work).map_err(|e| e.to_string())?;
