@@ -1368,6 +1368,16 @@ pub mod com_abi {
     }
 
     #[repr(C)]
+    pub struct IDWriteFontFile_Vtbl {
+        pub base: IUnknown_Vtbl,
+        pub GetReferenceKey:
+            unsafe extern "system" fn(*mut c_void, *mut *const c_void, *mut u32) -> HRESULT,
+        pub GetLoader: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT,
+        pub Analyze:
+            unsafe extern "system" fn(*mut c_void, *mut BOOL, *mut i32, *mut i32, *mut u32) -> HRESULT,
+    }
+
+    #[repr(C)]
     pub struct IDWriteFontFileLoader_Vtbl {
         pub base: IUnknown_Vtbl,
         pub CreateStreamFromKey:
@@ -6894,6 +6904,7 @@ mod tests {
         assert_eq!(size_of::<IDWriteFontSet_Vtbl>(), 13 * word);
         assert_eq!(size_of::<IDWriteFontSetBuilder_Vtbl>(), 7 * word);
         assert_eq!(size_of::<IDWriteFontSetBuilder1_Vtbl>(), 8 * word);
+        assert_eq!(size_of::<IDWriteFontFile_Vtbl>(), 6 * word);
         assert_eq!(size_of::<IDWriteFontFileLoader_Vtbl>(), 4 * word);
         assert_eq!(size_of::<IDWriteInMemoryFontFileLoader_Vtbl>(), 6 * word);
         assert_eq!(size_of::<IDWriteFontFileStream_Vtbl>(), 7 * word);
@@ -7195,5 +7206,460 @@ mod tests {
         state.store(1, Ordering::Release);
         unsafe { wake_by_address_win7(ptr::from_ref(&*state).cast()) };
         handle.join().expect("worker woke cleanly");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win7_dwrite_shim_shapes_and_rasterizes_bundled_fonts_in_all_modes() {
+        use super::imp::{
+            E_NOINTERFACE, IID_IUNKNOWN, S_OK, com_qi, com_release, com_vtbl,
+            static_unk_add_ref, static_unk_release,
+        };
+
+        #[repr(C)]
+        struct IDWriteLocalizedStrings_Vtbl {
+            base: IUnknown_Vtbl,
+            GetCount: unsafe extern "system" fn(*mut c_void) -> u32,
+            FindLocaleName: unsafe extern "system" fn(
+                *mut c_void,
+                *const u16,
+                *mut u32,
+                *mut BOOL,
+            ) -> HRESULT,
+            GetLocaleNameLength:
+                unsafe extern "system" fn(*mut c_void, u32, *mut u32) -> HRESULT,
+            GetLocaleName:
+                unsafe extern "system" fn(*mut c_void, u32, *mut u16, u32) -> HRESULT,
+            GetStringLength: unsafe extern "system" fn(*mut c_void, u32, *mut u32) -> HRESULT,
+            GetString: unsafe extern "system" fn(*mut c_void, u32, *mut u16, u32) -> HRESULT,
+        }
+
+        const IID_IDWRITE_FONT_FACE3: GUID =
+            GUID::from_u128(0xd37d7598_09be_4222_a236_2081341cc1f2);
+        const IID_IDWRITE_TEXT_FORMAT1: GUID =
+            GUID::from_u128(0x5f174b49_0d8b_4cfb_8bca_f1cce9d06c67);
+        const IID_IDWRITE_PIXEL_SNAPPING: GUID =
+            GUID::from_u128(0xeaf3a2da_ecf4_4d24_b644_b34f6842024b);
+        const IID_IDWRITE_TEXT_RENDERER: GUID =
+            GUID::from_u128(0xef8a8135_5cc6_45fe_8825_c5a0724eb819);
+
+        fn wide(s: &str) -> Vec<u16> {
+            s.encode_utf16().chain(core::iter::once(0)).collect()
+        }
+
+        unsafe fn first_localized_string(ls: *mut c_void) -> String {
+            assert!(!ls.is_null());
+            let v = unsafe { &*com_vtbl::<IDWriteLocalizedStrings_Vtbl>(ls) };
+            let count = unsafe { (v.GetCount)(ls) };
+            assert!(count >= 1);
+            let mut len = 0u32;
+            assert!(unsafe { (v.GetStringLength)(ls, 0, &mut len) } >= 0);
+            let mut buf = vec![0u16; (len + 1) as usize];
+            assert!(unsafe { (v.GetString)(ls, 0, buf.as_mut_ptr(), len + 1) } >= 0);
+            String::from_utf16_lossy(&buf[..len as usize])
+        }
+
+        #[repr(C)]
+        struct TestRenderer {
+            vtbl: *const IDWriteTextRenderer_Vtbl,
+            factory5: *mut c_void,
+            expected_cached_face: *mut c_void,
+            expected_family: String,
+            runs_seen: usize,
+            glyphs_rasterized: usize,
+        }
+
+        unsafe extern "system" fn tr_qi(
+            this: *mut c_void,
+            iid: *const GUID,
+            out: *mut *mut c_void,
+        ) -> HRESULT {
+            let g = unsafe { *iid };
+            if g == IID_IUNKNOWN || g == IID_IDWRITE_PIXEL_SNAPPING || g == IID_IDWRITE_TEXT_RENDERER
+            {
+                unsafe { *out = this };
+                S_OK
+            } else {
+                unsafe { *out = ptr::null_mut() };
+                E_NOINTERFACE
+            }
+        }
+        unsafe extern "system" fn tr_snap(
+            _: *mut c_void,
+            _: *const c_void,
+            out: *mut BOOL,
+        ) -> HRESULT {
+            unsafe { *out = 0 };
+            S_OK
+        }
+        unsafe extern "system" fn tr_xform(
+            _: *mut c_void,
+            _: *const c_void,
+            out: *mut DWRITE_MATRIX,
+        ) -> HRESULT {
+            unsafe {
+                *out = DWRITE_MATRIX {
+                    m11: 1.0,
+                    m12: 0.0,
+                    m21: 0.0,
+                    m22: 1.0,
+                    dx: 0.0,
+                    dy: 0.0,
+                };
+            }
+            S_OK
+        }
+        unsafe extern "system" fn tr_ppd(
+            _: *mut c_void,
+            _: *const c_void,
+            out: *mut f32,
+        ) -> HRESULT {
+            unsafe { *out = 1.0 };
+            S_OK
+        }
+        unsafe extern "system" fn tr_noop_line(
+            _: *mut c_void,
+            _: *const c_void,
+            _: f32,
+            _: f32,
+            _: *const c_void,
+            _: i32,
+            _: *mut c_void,
+        ) -> HRESULT {
+            S_OK
+        }
+        unsafe extern "system" fn tr_noop_inline(
+            _: *mut c_void,
+            _: *const c_void,
+            _: f32,
+            _: f32,
+            _: *mut c_void,
+            _: BOOL,
+            _: BOOL,
+            _: *mut c_void,
+        ) -> HRESULT {
+            S_OK
+        }
+        unsafe extern "system" fn tr_draw_run(
+            this: *mut c_void,
+            _: *const c_void,
+            bx: f32,
+            by: f32,
+            measure: i32,
+            run: *const DWRITE_GLYPH_RUN,
+            _: *const DWRITE_GLYPH_RUN_DESCRIPTION,
+            _: *mut c_void,
+        ) -> HRESULT {
+            let me = unsafe { &mut *(this as *mut TestRenderer) };
+            let r = unsafe { &*run };
+            assert!(!r.fontFace.is_null());
+            assert!(r.glyphCount > 0);
+            let face3 = unsafe {
+                com_qi(r.fontFace, &IID_IDWRITE_FONT_FACE3).expect("QI IDWriteFontFace3 in Draw")
+            };
+            if !me.expected_cached_face.is_null() {
+                assert_eq!(
+                    face3, me.expected_cached_face,
+                    "DrawGlyphRun must return the canonical interned IDWriteFontFace3 pointer"
+                );
+            }
+            let fv3 = unsafe { &*com_vtbl::<IDWriteFontFace3_Vtbl>(face3) };
+            let mut fam_names = ptr::null_mut();
+            let hr_fam = unsafe { (fv3.GetFamilyNames)(face3, &mut fam_names) };
+            assert!(hr_fam >= 0 && !fam_names.is_null(), "GetFamilyNames failed: {hr_fam:#x}");
+            let fam = unsafe { first_localized_string(fam_names) };
+            unsafe { com_release(fam_names) };
+            assert_eq!(fam, me.expected_family);
+
+            let mut rec_mode = -1i32;
+            let mut grid_fit = -1i32;
+            let hr_rec = unsafe {
+                (fv3.GetRecommendedRenderingMode3)(
+                    face3,
+                    r.fontEmSize,
+                    96.0,
+                    96.0,
+                    ptr::null(),
+                    r.isSideways,
+                    0,
+                    measure,
+                    ptr::null_mut(),
+                    &mut rec_mode,
+                    &mut grid_fit,
+                )
+            };
+            assert!(hr_rec >= 0, "GetRecommendedRenderingMode3 failed: {hr_rec:#x}");
+            assert!((2..=5).contains(&rec_mode), "unexpected recommended mode: {rec_mode}");
+
+            // Rasterize first glyph across all Win7 Classic & Aero combinations:
+            // (mode=1 ALIASED + CLEARTYPE_3x1), (mode=1 ALIASED + GRAYSCALE_1x1),
+            // (mode=5 NATURAL_SYMMETRIC + CLEARTYPE_3x1), (mode=5 + GRAYSCALE_1x1).
+            let single_glyph = unsafe { *r.glyphIndices };
+            let single_run = DWRITE_GLYPH_RUN {
+                fontFace: face3,
+                fontEmSize: r.fontEmSize,
+                glyphCount: 1,
+                glyphIndices: &single_glyph,
+                glyphAdvances: &0.0,
+                glyphOffsets: &DWRITE_GLYPH_OFFSET {
+                    advanceOffset: 0.0,
+                    ascenderOffset: 0.0,
+                },
+                isSideways: 0,
+                bidiLevel: 0,
+            };
+            let fac_vtbl = unsafe { &*com_vtbl::<IDWriteFactory5_Vtbl>(me.factory5) };
+            for &(mode, antialias, tex_type, bpp) in &[
+                (1i32, 0i32, 1i32, 3usize),
+                (1i32, 1i32, 0i32, 1usize),
+                (5i32, 0i32, 1i32, 3usize),
+                (5i32, 1i32, 0i32, 1usize),
+            ] {
+                let mut gra = ptr::null_mut();
+                let hr_gra = unsafe {
+                    (fac_vtbl.base.base.CreateGlyphRunAnalysis)(
+                        me.factory5,
+                        &single_run,
+                        ptr::null(),
+                        mode,
+                        measure,
+                        0,
+                        antialias,
+                        bx,
+                        by,
+                        &mut gra,
+                    )
+                };
+                assert!(hr_gra >= 0 && !gra.is_null(), "CreateGlyphRunAnalysis({mode},{antialias}) failed: {hr_gra:#x}");
+                let gv = unsafe { &*com_vtbl::<IDWriteGlyphRunAnalysis_Vtbl>(gra) };
+                let mut bounds = RECT {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                };
+                let hr_b = unsafe { (gv.GetAlphaTextureBounds)(gra, tex_type, &mut bounds) };
+                assert!(hr_b >= 0, "GetAlphaTextureBounds({mode},{antialias},{tex_type}) failed: {hr_b:#x}");
+                let w = (bounds.right - bounds.left) as usize;
+                let h = (bounds.bottom - bounds.top) as usize;
+                assert!(w > 0 && h > 0, "empty glyph bounds for first glyph");
+                let mut buf = vec![0u8; w * h * bpp];
+                let hr_a = unsafe {
+                    (gv.CreateAlphaTexture)(gra, tex_type, &bounds, buf.as_mut_ptr(), buf.len() as u32)
+                };
+                assert!(hr_a >= 0, "CreateAlphaTexture({mode},{antialias},{tex_type}) failed: {hr_a:#x}");
+                assert!(buf.iter().any(|&px| px > 0), "blank glyph bitmap for ({mode},{antialias},{tex_type})");
+                unsafe { com_release(gra) };
+                me.glyphs_rasterized += 1;
+            }
+
+            unsafe { com_release(face3) };
+            me.runs_seen += 1;
+            S_OK
+        }
+
+        static TEST_RENDERER_VTBL: IDWriteTextRenderer_Vtbl = IDWriteTextRenderer_Vtbl {
+            base: IDWritePixelSnapping_Vtbl {
+                base: IUnknown_Vtbl {
+                    QueryInterface: tr_qi,
+                    AddRef: static_unk_add_ref,
+                    Release: static_unk_release,
+                },
+                IsPixelSnappingDisabled: tr_snap,
+                GetCurrentTransform: tr_xform,
+                GetPixelsPerDip: tr_ppd,
+            },
+            DrawGlyphRun: tr_draw_run,
+            DrawUnderline: tr_noop_line,
+            DrawStrikethrough: tr_noop_line,
+            DrawInlineObject: tr_noop_inline,
+        };
+
+        unsafe {
+            let mut factory5 = ptr::null_mut();
+            let hr = super::dwrite::create_win7_dwrite_factory5_for_test(&mut factory5);
+            assert!(hr >= 0 && !factory5.is_null(), "create_win7_dwrite_factory5_for_test: {hr:#x}");
+            let fv5 = &*com_vtbl::<IDWriteFactory5_Vtbl>(factory5);
+
+            // Register bundled in-memory fonts exactly like DirectWriteTextSystem::add_fonts.
+            let mut im_loader = ptr::null_mut();
+            assert!((fv5.CreateInMemoryFontFileLoader)(factory5, &mut im_loader) >= 0);
+            assert!(
+                (fv5.base.base.base.base.base.RegisterFontFileLoader)(factory5, im_loader) >= 0
+            );
+            let mut builder = ptr::null_mut();
+            assert!((fv5.CreateFontSetBuilder5)(factory5, &mut builder) >= 0);
+            let imv = &*com_vtbl::<IDWriteInMemoryFontFileLoader_Vtbl>(im_loader);
+            let bldv = &*com_vtbl::<IDWriteFontSetBuilder1_Vtbl>(builder);
+
+            for blob in [
+                horizon_theme::fonts::GEIST_MONO,
+                horizon_theme::fonts::BRICOLAGE_REGULAR,
+                horizon_theme::fonts::BRICOLAGE_MEDIUM,
+                horizon_theme::fonts::BRICOLAGE_BOLD,
+            ] {
+                let mut font_file = ptr::null_mut();
+                assert!(
+                    (imv.CreateInMemoryFontFileReference)(
+                        im_loader,
+                        factory5,
+                        blob.as_ptr().cast(),
+                        blob.len() as u32,
+                        ptr::null_mut(),
+                        &mut font_file,
+                    ) >= 0
+                );
+                assert!((bldv.AddFontFile)(builder, font_file) >= 0);
+                com_release(font_file);
+            }
+
+            let mut font_set = ptr::null_mut();
+            assert!((bldv.base.CreateFontSet)(builder, &mut font_set) >= 0);
+            let mut custom_coll = ptr::null_mut();
+            assert!(
+                (fv5.base.base.CreateFontCollectionFromFontSet)(
+                    factory5,
+                    font_set,
+                    &mut custom_coll,
+                ) >= 0
+            );
+
+            // 1. Pre-select Bricolage Grotesque (weight 500) like select_and_cache_font, then shape & draw.
+            let mut coll_set = ptr::null_mut();
+            assert!(((*com_vtbl::<IDWriteFontCollection1_Vtbl>(custom_coll)).GetFontSet)(custom_coll, &mut coll_set) >= 0);
+            let b_family = wide("Bricolage Grotesque");
+            let mut matching = ptr::null_mut();
+            assert!(
+                ((*com_vtbl::<IDWriteFontSet_Vtbl>(coll_set)).GetMatchingFonts)(
+                    coll_set,
+                    b_family.as_ptr(),
+                    500,
+                    5,
+                    0,
+                    &mut matching,
+                ) >= 0
+            );
+            let mut ffr = ptr::null_mut();
+            assert!(((*com_vtbl::<IDWriteFontSet_Vtbl>(matching)).GetFontFaceReference)(matching, 0, &mut ffr) >= 0);
+            let mut selected_face3 = ptr::null_mut();
+            assert!(((*com_vtbl::<IDWriteFontFaceReference_Vtbl>(ffr)).CreateFontFace)(ffr, &mut selected_face3) >= 0);
+
+            let locale = wide("en-US");
+            let mut tf = ptr::null_mut();
+            assert!(
+                (fv5.base.base.base.base.base.CreateTextFormat)(
+                    factory5,
+                    b_family.as_ptr(),
+                    custom_coll,
+                    500,
+                    0,
+                    5,
+                    16.0,
+                    locale.as_ptr(),
+                    &mut tf,
+                ) >= 0
+            );
+            let tf1 = com_qi(tf, &IID_IDWRITE_TEXT_FORMAT1).expect("QI IDWriteTextFormat1");
+            let mut sys_fb = ptr::null_mut();
+            assert!((fv5.base.base.base.GetSystemFontFallback)(factory5, &mut sys_fb) >= 0);
+            assert!(((*com_vtbl::<IDWriteTextFormat1_Vtbl>(tf1)).SetFontFallback)(tf1, sys_fb) >= 0);
+
+            let sample = wide("Play Horizon 0.2.1");
+            let mut layout = ptr::null_mut();
+            assert!(
+                (fv5.base.base.base.base.base.CreateTextLayout)(
+                    factory5,
+                    sample.as_ptr(),
+                    (sample.len() - 1) as u32,
+                    tf1,
+                    f32::INFINITY,
+                    f32::INFINITY,
+                    &mut layout,
+                ) >= 0
+            );
+
+            let mut renderer = TestRenderer {
+                vtbl: &TEST_RENDERER_VTBL,
+                factory5,
+                expected_cached_face: selected_face3,
+                expected_family: "Bricolage Grotesque".to_string(),
+                runs_seen: 0,
+                glyphs_rasterized: 0,
+            };
+            let hr_draw = ((*com_vtbl::<IDWriteTextLayout_Vtbl>(layout)).Draw)(
+                layout,
+                ptr::null(),
+                ptr::addr_of_mut!(renderer).cast(),
+                0.0,
+                0.0,
+            );
+            assert!(hr_draw >= 0, "Draw(Bricolage Grotesque) failed: {hr_draw:#x}");
+            assert!(renderer.runs_seen >= 1);
+            assert_eq!(renderer.glyphs_rasterized, renderer.runs_seen * 4);
+
+            // 2. Shape Geist Mono WITHOUT calling GetMatchingFonts first so DrawGlyphRun must
+            //    discover family_names via custom_collections() -> GetFontFromFontFace!
+            let g_family = wide("Geist Mono");
+            let mut tf_mono = ptr::null_mut();
+            assert!(
+                (fv5.base.base.base.base.base.CreateTextFormat)(
+                    factory5,
+                    g_family.as_ptr(),
+                    custom_coll,
+                    400,
+                    0,
+                    5,
+                    14.0,
+                    locale.as_ptr(),
+                    &mut tf_mono,
+                ) >= 0
+            );
+            let mut layout_mono = ptr::null_mut();
+            assert!(
+                (fv5.base.base.base.base.base.CreateTextLayout)(
+                    factory5,
+                    sample.as_ptr(),
+                    (sample.len() - 1) as u32,
+                    tf_mono,
+                    f32::INFINITY,
+                    f32::INFINITY,
+                    &mut layout_mono,
+                ) >= 0
+            );
+            let mut renderer_mono = TestRenderer {
+                vtbl: &TEST_RENDERER_VTBL,
+                factory5,
+                expected_cached_face: ptr::null_mut(),
+                expected_family: "Geist Mono".to_string(),
+                runs_seen: 0,
+                glyphs_rasterized: 0,
+            };
+            let hr_draw_mono = ((*com_vtbl::<IDWriteTextLayout_Vtbl>(layout_mono)).Draw)(
+                layout_mono,
+                ptr::null(),
+                ptr::addr_of_mut!(renderer_mono).cast(),
+                0.0,
+                0.0,
+            );
+            assert!(hr_draw_mono >= 0, "Draw(Geist Mono) failed: {hr_draw_mono:#x}");
+            assert!(renderer_mono.runs_seen >= 1);
+            assert_eq!(renderer_mono.glyphs_rasterized, renderer_mono.runs_seen * 4);
+
+            com_release(layout_mono);
+            com_release(tf_mono);
+            com_release(layout);
+            com_release(sys_fb);
+            com_release(tf1);
+            com_release(tf);
+            com_release(selected_face3);
+            com_release(ffr);
+            com_release(matching);
+            com_release(coll_set);
+            com_release(custom_coll);
+            com_release(font_set);
+            com_release(builder);
+            com_release(im_loader);
+            com_release(factory5);
+        }
     }
 }

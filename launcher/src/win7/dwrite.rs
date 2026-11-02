@@ -22,10 +22,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 const DWRITE_E_NOCOLOR: HRESULT = 0x8898_500Cu32 as i32;
 const DWRITE_RENDERING_MODE_ALIASED: i32 = 1;
+const DWRITE_RENDERING_MODE_GDI_CLASSIC: i32 = 2;
 const DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC: i32 = 5;
-const DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE: i32 = 1;
 const DWRITE_TEXTURE_ALIASED_1X1: i32 = 0;
 const DWRITE_TEXTURE_CLEARTYPE_3X1: i32 = 1;
+const DWRITE_WORD_WRAPPING_NO_WRAP: i32 = 1;
+const WIN7_MAX_LAYOUT_DIM: f32 = 32_000.0;
 
 const IID_IDWRITE_FACTORY: GUID = GUID::from_u128(0xb859ee5a_d838_4b5b_a2e8_1adc7d93db48);
 const IID_IDWRITE_FACTORY1: GUID = GUID::from_u128(0x30572f99_dac6_41db_a16e_0486307e606a);
@@ -734,9 +736,79 @@ struct Win7DWriteFontFace3 {
     face_names: AtomicUsize,
 }
 
-fn face_intern_map() -> &'static Mutex<HashMap<usize, usize>> {
-    static MAP: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum FaceKey {
+    File {
+        loader: usize,
+        ref_key: Vec<u8>,
+        face_type: i32,
+        index: u32,
+        sims: i32,
+    },
+    Ptr(usize),
+}
+
+fn face_intern_map() -> &'static Mutex<HashMap<FaceKey, usize>> {
+    static MAP: OnceLock<Mutex<HashMap<FaceKey, usize>>> = OnceLock::new();
     MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn custom_collections() -> &'static Mutex<Vec<SendPtr>> {
+    static LIST: OnceLock<Mutex<Vec<SendPtr>>> = OnceLock::new();
+    LIST.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+unsafe fn canonical_face_key(raw_face: *mut c_void) -> FaceKey {
+    let fv = unsafe { &*com_vtbl::<IDWriteFontFace_Vtbl>(raw_face) };
+    let mut num_files: u32 = 0;
+    if unsafe { (fv.GetFiles)(raw_face, &mut num_files, ptr::null_mut()) } >= 0 && num_files == 1 {
+        let mut file: *mut c_void = ptr::null_mut();
+        if unsafe { (fv.GetFiles)(raw_face, &mut num_files, &mut file) } >= 0 && !file.is_null() {
+            let ffv = unsafe { &*com_vtbl::<IDWriteFontFile_Vtbl>(file) };
+            let mut loader: *mut c_void = ptr::null_mut();
+            let mut key_ptr: *const c_void = ptr::null();
+            let mut key_size: u32 = 0;
+            let hr_loader = unsafe { (ffv.GetLoader)(file, &mut loader) };
+            let hr_key = unsafe { (ffv.GetReferenceKey)(file, &mut key_ptr, &mut key_size) };
+            let built = if hr_loader >= 0
+                && !loader.is_null()
+                && hr_key >= 0
+                && (key_size == 0 || !key_ptr.is_null())
+            {
+                let loader_id = match unsafe { com_qi(loader, &IID_IUNKNOWN) } {
+                    Some(unk) => {
+                        let addr = unk as usize;
+                        unsafe { com_release(unk) };
+                        addr
+                    }
+                    None => loader as usize,
+                };
+                let ref_key = if key_size == 0 {
+                    Vec::new()
+                } else {
+                    unsafe { core::slice::from_raw_parts(key_ptr.cast::<u8>(), key_size as usize) }
+                        .to_vec()
+                };
+                Some(FaceKey::File {
+                    loader: loader_id,
+                    ref_key,
+                    face_type: unsafe { (fv.GetType)(raw_face) },
+                    index: unsafe { (fv.GetIndex)(raw_face) },
+                    sims: unsafe { (fv.GetSimulations)(raw_face) },
+                })
+            } else {
+                None
+            };
+            if !loader.is_null() {
+                unsafe { com_release(loader) };
+            }
+            unsafe { com_release(file) };
+            if let Some(k) = built {
+                return k;
+            }
+        }
+    }
+    FaceKey::Ptr(raw_face as usize)
 }
 
 unsafe fn populate_face_meta_from_font(wrapper: &Win7DWriteFontFace3, raw_font: *mut c_void) {
@@ -787,6 +859,84 @@ unsafe fn populate_face_meta_from_font(wrapper: &Win7DWriteFontFace3, raw_font: 
     }
 }
 
+unsafe fn ensure_face_metadata(
+    wrapper: &Win7DWriteFontFace3,
+    raw_face: *mut c_void,
+    opt_raw_font: *mut c_void,
+    raw_factory: *mut c_void,
+) {
+    if !opt_raw_font.is_null() {
+        unsafe { populate_face_meta_from_font(wrapper, opt_raw_font) };
+    }
+    if wrapper.family_names.load(Ordering::Acquire) != 0 {
+        return;
+    }
+    let custom_snapshot: Vec<SendPtr> = {
+        let guard = custom_collections()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard
+            .iter()
+            .map(|c| {
+                unsafe { com_add_ref(c.0) };
+                *c
+            })
+            .collect()
+    };
+    let mut matched = false;
+    for coll in custom_snapshot {
+        if !matched && !coll.0.is_null() {
+            let mut found_font = ptr::null_mut();
+            if unsafe {
+                ((*com_vtbl::<IDWriteFontCollection_Vtbl>(coll.0)).GetFontFromFontFace)(
+                    coll.0,
+                    raw_face,
+                    &mut found_font,
+                )
+            } >= 0
+                && !found_font.is_null()
+            {
+                unsafe {
+                    populate_face_meta_from_font(wrapper, found_font);
+                    com_release(found_font);
+                }
+                matched = wrapper.family_names.load(Ordering::Acquire) != 0;
+            }
+        }
+        unsafe { com_release(coll.0) };
+    }
+    if matched || raw_factory.is_null() {
+        return;
+    }
+    let mut sys_coll = ptr::null_mut();
+    if unsafe {
+        ((*com_vtbl::<IDWriteFactory_Vtbl>(raw_factory)).GetSystemFontCollection)(
+            raw_factory,
+            &mut sys_coll,
+            0,
+        )
+    } >= 0
+        && !sys_coll.is_null()
+    {
+        let mut found_font = ptr::null_mut();
+        if unsafe {
+            ((*com_vtbl::<IDWriteFontCollection_Vtbl>(sys_coll)).GetFontFromFontFace)(
+                sys_coll,
+                raw_face,
+                &mut found_font,
+            )
+        } >= 0
+            && !found_font.is_null()
+        {
+            unsafe {
+                populate_face_meta_from_font(wrapper, found_font);
+                com_release(found_font);
+            }
+        }
+        unsafe { com_release(sys_coll) };
+    }
+}
+
 unsafe fn intern_font_face3(
     raw_face: *mut c_void,
     opt_raw_font: *mut c_void,
@@ -796,23 +946,28 @@ unsafe fn intern_font_face3(
         return ptr::null_mut();
     }
     if unsafe { *(raw_face as *const usize) } == ptr::addr_of!(FONT_FACE3_VTBL) as usize {
-        unsafe { ff3_add_ref(raw_face) };
+        let existing = raw_face as *mut Win7DWriteFontFace3;
+        unsafe {
+            ensure_face_metadata(&*existing, (*existing).raw_face, opt_raw_font, raw_factory);
+            ff3_add_ref(raw_face);
+        }
         return raw_face;
     }
-    let key = raw_face as usize;
-    let mut guard = face_intern_map().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(&existing) = guard.get(&key) {
-        let ptr = existing as *mut Win7DWriteFontFace3;
-        unsafe {
-            populate_face_meta_from_font(&*ptr, opt_raw_font);
-            ff3_add_ref(ptr.cast());
+    let key = unsafe { canonical_face_key(raw_face) };
+    {
+        let guard = face_intern_map().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(&existing) = guard.get(&key) {
+            let ptr = existing as *mut Win7DWriteFontFace3;
+            unsafe { ff3_add_ref(ptr.cast()) };
+            drop(guard);
+            unsafe { ensure_face_metadata(&*ptr, raw_face, opt_raw_font, raw_factory) };
+            return ptr.cast();
         }
-        return ptr.cast();
     }
     unsafe { com_add_ref(raw_face) };
     let raw_face1 =
         unsafe { com_qi(raw_face, &IID_IDWRITE_FONT_FACE1).unwrap_or(ptr::null_mut()) };
-    let boxed = Box::into_raw(Box::new(Win7DWriteFontFace3 {
+    let candidate = Box::into_raw(Box::new(Win7DWriteFontFace3 {
         vtbl: &FONT_FACE3_VTBL,
         refs: AtomicU32::new(2), // 1 kept in intern map + 1 returned to caller
         raw_face,
@@ -823,41 +978,25 @@ unsafe fn intern_font_face3(
         family_names: AtomicUsize::new(0),
         face_names: AtomicUsize::new(0),
     }));
-    guard.insert(key, boxed as usize);
-    drop(guard);
-
-    if !opt_raw_font.is_null() {
-        unsafe { populate_face_meta_from_font(&*boxed, opt_raw_font) };
-    } else if !raw_factory.is_null() {
-        let mut sys_coll = ptr::null_mut();
-        if unsafe {
-            ((*com_vtbl::<IDWriteFactory_Vtbl>(raw_factory)).GetSystemFontCollection)(
-                raw_factory,
-                &mut sys_coll,
-                0,
-            )
-        } >= 0
-            && !sys_coll.is_null()
-        {
-            let mut found_font = ptr::null_mut();
-            if unsafe {
-                ((*com_vtbl::<IDWriteFontCollection_Vtbl>(sys_coll)).GetFontFromFontFace)(
-                    sys_coll,
-                    raw_face,
-                    &mut found_font,
-                )
-            } >= 0
-                && !found_font.is_null()
-            {
-                unsafe {
-                    populate_face_meta_from_font(&*boxed, found_font);
-                    com_release(found_font);
-                }
+    let chosen = {
+        let mut guard = face_intern_map().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(&existing) = guard.get(&key) {
+            let ptr = existing as *mut Win7DWriteFontFace3;
+            unsafe { ff3_add_ref(ptr.cast()) };
+            drop(guard);
+            // Drop losing candidate's 2 initial refs cleanly.
+            unsafe {
+                (*candidate).refs.store(1, Ordering::Release);
+                ff3_release(candidate.cast());
             }
-            unsafe { com_release(sys_coll) };
+            ptr
+        } else {
+            guard.insert(key, candidate as usize);
+            candidate
         }
-    }
-    boxed.cast()
+    };
+    unsafe { ensure_face_metadata(&*chosen, raw_face, opt_raw_font, raw_factory) };
+    chosen.cast()
 }
 
 #[inline]
@@ -1016,11 +1155,20 @@ unsafe extern "system" fn ff3_rec_mode0(
 ) -> HRESULT {
     let raw = unsafe { (*(this as *const Win7DWriteFontFace3)).raw_face };
     let raw_params = unwrap_rendering_params(params);
-    unsafe {
+    let hr = unsafe {
         ((*com_vtbl::<IDWriteFontFace_Vtbl>(raw)).GetRecommendedRenderingMode)(
             raw, em, ppd, measure, raw_params, mode,
         )
+    };
+    if hr >= 0 && !mode.is_null() {
+        let m = unsafe { *mode };
+        if !(DWRITE_RENDERING_MODE_GDI_CLASSIC..=DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC)
+            .contains(&m)
+        {
+            unsafe { *mode = DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC };
+        }
     }
+    hr
 }
 unsafe extern "system" fn ff3_gdi_metrics(
     this: *mut c_void,
@@ -2235,7 +2383,12 @@ unsafe extern "system" fn rp1_release(this: *mut c_void) -> u32 {
 }
 unsafe extern "system" fn rp1_gamma(this: *mut c_void) -> f32 {
     let raw = unsafe { (*(this as *const Win7DWriteRenderingParams1)).raw };
-    unsafe { ((*com_vtbl::<IDWriteRenderingParams_Vtbl>(raw)).GetGamma)(raw) }
+    let g = unsafe { ((*com_vtbl::<IDWriteRenderingParams_Vtbl>(raw)).GetGamma)(raw) };
+    if g.is_finite() && (0.5..=4.0).contains(&g) {
+        g
+    } else {
+        1.8
+    }
 }
 unsafe extern "system" fn rp1_contrast(this: *mut c_void) -> f32 {
     let raw = unsafe { (*(this as *const Win7DWriteRenderingParams1)).raw };
@@ -2275,7 +2428,7 @@ struct Win7GlyphRunAnalysis {
     vtbl: *const IDWriteGlyphRunAnalysis_Vtbl,
     refs: AtomicU32,
     raw: *mut c_void,
-    grayscale_from_cleartype: bool,
+    raw_is_cleartype: bool,
 }
 
 unsafe extern "system" fn gra_qi(
@@ -2316,17 +2469,26 @@ unsafe extern "system" fn gra_bounds(
     bounds: *mut RECT,
 ) -> HRESULT {
     let me = unsafe { &*(this as *const Win7GlyphRunAnalysis) };
-    let actual_type = if me.grayscale_from_cleartype && tex_type == DWRITE_TEXTURE_ALIASED_1X1 {
+    let native_type = if me.raw_is_cleartype {
         DWRITE_TEXTURE_CLEARTYPE_3X1
     } else {
-        tex_type
+        DWRITE_TEXTURE_ALIASED_1X1
     };
-    unsafe {
+    let hr = unsafe {
         ((*com_vtbl::<IDWriteGlyphRunAnalysis_Vtbl>(me.raw)).GetAlphaTextureBounds)(
             me.raw,
-            actual_type,
+            native_type,
             bounds,
         )
+    };
+    if hr >= 0 || native_type == tex_type {
+        hr
+    } else {
+        unsafe {
+            ((*com_vtbl::<IDWriteGlyphRunAnalysis_Vtbl>(me.raw)).GetAlphaTextureBounds)(
+                me.raw, tex_type, bounds,
+            )
+        }
     }
 }
 unsafe extern "system" fn gra_alpha(
@@ -2337,7 +2499,9 @@ unsafe extern "system" fn gra_alpha(
     buf_size: u32,
 ) -> HRESULT {
     let me = unsafe { &*(this as *const Win7GlyphRunAnalysis) };
-    if !me.grayscale_from_cleartype || tex_type != DWRITE_TEXTURE_ALIASED_1X1 {
+    if (me.raw_is_cleartype && tex_type == DWRITE_TEXTURE_CLEARTYPE_3X1)
+        || (!me.raw_is_cleartype && tex_type == DWRITE_TEXTURE_ALIASED_1X1)
+    {
         return unsafe {
             ((*com_vtbl::<IDWriteGlyphRunAnalysis_Vtbl>(me.raw)).CreateAlphaTexture)(
                 me.raw, tex_type, bounds, alpha, buf_size,
@@ -2351,30 +2515,75 @@ unsafe extern "system" fn gra_alpha(
     let w = (r.right - r.left).max(0) as usize;
     let h = (r.bottom - r.top).max(0) as usize;
     let pixels = w.saturating_mul(h);
-    if (buf_size as usize) < pixels {
-        return E_INVALIDARG;
+    if tex_type == DWRITE_TEXTURE_ALIASED_1X1 {
+        if (buf_size as usize) < pixels {
+            return E_INVALIDARG;
+        }
+        if pixels == 0 {
+            return S_OK;
+        }
+        let mut rgb = vec![0u8; pixels * 3];
+        let hr = unsafe {
+            ((*com_vtbl::<IDWriteGlyphRunAnalysis_Vtbl>(me.raw)).CreateAlphaTexture)(
+                me.raw,
+                DWRITE_TEXTURE_CLEARTYPE_3X1,
+                bounds,
+                rgb.as_mut_ptr(),
+                rgb.len() as u32,
+            )
+        };
+        if hr < 0 {
+            return unsafe {
+                ((*com_vtbl::<IDWriteGlyphRunAnalysis_Vtbl>(me.raw)).CreateAlphaTexture)(
+                    me.raw, tex_type, bounds, alpha, buf_size,
+                )
+            };
+        }
+        for i in 0..pixels {
+            let sum = rgb[i * 3] as u16 + rgb[i * 3 + 1] as u16 + rgb[i * 3 + 2] as u16;
+            unsafe { *alpha.add(i) = ((sum + 1) / 3) as u8 };
+        }
+        S_OK
+    } else if tex_type == DWRITE_TEXTURE_CLEARTYPE_3X1 {
+        let need = pixels.saturating_mul(3);
+        if (buf_size as usize) < need {
+            return E_INVALIDARG;
+        }
+        if pixels == 0 {
+            return S_OK;
+        }
+        let mut mono = vec![0u8; pixels];
+        let hr = unsafe {
+            ((*com_vtbl::<IDWriteGlyphRunAnalysis_Vtbl>(me.raw)).CreateAlphaTexture)(
+                me.raw,
+                DWRITE_TEXTURE_ALIASED_1X1,
+                bounds,
+                mono.as_mut_ptr(),
+                mono.len() as u32,
+            )
+        };
+        if hr < 0 {
+            return unsafe {
+                ((*com_vtbl::<IDWriteGlyphRunAnalysis_Vtbl>(me.raw)).CreateAlphaTexture)(
+                    me.raw, tex_type, bounds, alpha, buf_size,
+                )
+            };
+        }
+        for (i, &m) in mono.iter().enumerate() {
+            unsafe {
+                *alpha.add(i * 3) = m;
+                *alpha.add(i * 3 + 1) = m;
+                *alpha.add(i * 3 + 2) = m;
+            }
+        }
+        S_OK
+    } else {
+        unsafe {
+            ((*com_vtbl::<IDWriteGlyphRunAnalysis_Vtbl>(me.raw)).CreateAlphaTexture)(
+                me.raw, tex_type, bounds, alpha, buf_size,
+            )
+        }
     }
-    if pixels == 0 {
-        return S_OK;
-    }
-    let mut rgb = vec![0u8; pixels * 3];
-    let hr = unsafe {
-        ((*com_vtbl::<IDWriteGlyphRunAnalysis_Vtbl>(me.raw)).CreateAlphaTexture)(
-            me.raw,
-            DWRITE_TEXTURE_CLEARTYPE_3X1,
-            bounds,
-            rgb.as_mut_ptr(),
-            rgb.len() as u32,
-        )
-    };
-    if hr < 0 {
-        return hr;
-    }
-    for i in 0..pixels {
-        let sum = rgb[i * 3] as u16 + rgb[i * 3 + 1] as u16 + rgb[i * 3 + 2] as u16;
-        unsafe { *alpha.add(i) = ((sum + 1) / 3) as u8 };
-    }
-    S_OK
 }
 unsafe extern "system" fn gra_blend(
     this: *mut c_void,
@@ -3006,13 +3215,41 @@ unsafe extern "system" fn tl_release(this: *mut c_void) -> u32 {
         prev - 1
     }
 }
+#[inline]
+fn sanitize_layout_dim(v: f32) -> (f32, bool) {
+    if !v.is_finite() || v > WIN7_MAX_LAYOUT_DIM {
+        (
+            if v.is_sign_negative() {
+                0.0
+            } else {
+                WIN7_MAX_LAYOUT_DIM
+            },
+            true,
+        )
+    } else if v < 0.0 {
+        (0.0, false)
+    } else {
+        (v, false)
+    }
+}
+
 unsafe extern "system" fn tl_set_mw(this: *mut c_void, v: f32) -> HRESULT {
     let r = unsafe { (*(this as *const Win7DWriteTextLayout)).raw };
-    unsafe { ((*com_vtbl::<IDWriteTextLayout_Vtbl>(r)).SetMaxWidth)(r, v) }
+    let (clamped, unbounded) = sanitize_layout_dim(v);
+    if unbounded {
+        unsafe {
+            let _ = ((*com_vtbl::<IDWriteTextFormat_Vtbl>(r)).SetWordWrapping)(
+                r,
+                DWRITE_WORD_WRAPPING_NO_WRAP,
+            );
+        }
+    }
+    unsafe { ((*com_vtbl::<IDWriteTextLayout_Vtbl>(r)).SetMaxWidth)(r, clamped) }
 }
 unsafe extern "system" fn tl_set_mh(this: *mut c_void, v: f32) -> HRESULT {
     let r = unsafe { (*(this as *const Win7DWriteTextLayout)).raw };
-    unsafe { ((*com_vtbl::<IDWriteTextLayout_Vtbl>(r)).SetMaxHeight)(r, v) }
+    let (clamped, _) = sanitize_layout_dim(v);
+    unsafe { ((*com_vtbl::<IDWriteTextLayout_Vtbl>(r)).SetMaxHeight)(r, clamped) }
 }
 unsafe extern "system" fn tl_set_fc(
     this: *mut c_void,
@@ -3776,6 +4013,8 @@ unsafe extern "system" fn dw5_text_layout(
     }
     let raw = unsafe { (*(this as *const Win7DWriteFactory5)).raw };
     let raw_fmt = unwrap_text_format(fmt);
+    let (safe_w, unbounded_w) = sanitize_layout_dim(max_w);
+    let (safe_h, _) = sanitize_layout_dim(max_h);
     let mut raw_tl = ptr::null_mut();
     let hr = unsafe {
         ((*com_vtbl::<IDWriteFactory_Vtbl>(raw)).CreateTextLayout)(
@@ -3783,14 +4022,22 @@ unsafe extern "system" fn dw5_text_layout(
             text,
             len,
             raw_fmt,
-            max_w,
-            max_h,
+            safe_w,
+            safe_h,
             &mut raw_tl,
         )
     };
     if hr < 0 || raw_tl.is_null() {
         unsafe { *out = ptr::null_mut() };
         return hr;
+    }
+    if unbounded_w {
+        unsafe {
+            let _ = ((*com_vtbl::<IDWriteTextFormat_Vtbl>(raw_tl)).SetWordWrapping)(
+                raw_tl,
+                DWRITE_WORD_WRAPPING_NO_WRAP,
+            );
+        }
     }
     unsafe { com_add_ref(raw) };
     let wrapped = Box::into_raw(Box::new(Win7DWriteTextLayout {
@@ -3819,6 +4066,8 @@ unsafe extern "system" fn dw5_gdi_layout(
     }
     let raw = unsafe { (*(this as *const Win7DWriteFactory5)).raw };
     let raw_fmt = unwrap_text_format(fmt);
+    let (safe_w, unbounded_w) = sanitize_layout_dim(w);
+    let (safe_h, _) = sanitize_layout_dim(h);
     let mut raw_tl = ptr::null_mut();
     let hr = unsafe {
         ((*com_vtbl::<IDWriteFactory_Vtbl>(raw)).CreateGdiCompatibleTextLayout)(
@@ -3826,8 +4075,8 @@ unsafe extern "system" fn dw5_gdi_layout(
             text,
             len,
             raw_fmt,
-            w,
-            h,
+            safe_w,
+            safe_h,
             ppd,
             xform,
             gdi_nat,
@@ -3837,6 +4086,14 @@ unsafe extern "system" fn dw5_gdi_layout(
     if hr < 0 || raw_tl.is_null() {
         unsafe { *out = ptr::null_mut() };
         return hr;
+    }
+    if unbounded_w {
+        unsafe {
+            let _ = ((*com_vtbl::<IDWriteTextFormat_Vtbl>(raw_tl)).SetWordWrapping)(
+                raw_tl,
+                DWRITE_WORD_WRAPPING_NO_WRAP,
+            );
+        }
     }
     unsafe { com_add_ref(raw) };
     let wrapped = Box::into_raw(Box::new(Win7DWriteTextLayout {
@@ -3979,7 +4236,7 @@ unsafe extern "system" fn dw5_gra3(
     mode: i32,
     measure: i32,
     _grid: i32,
-    antialias: i32,
+    _antialias: i32,
     bx: f32,
     by: f32,
     out: *mut *mut c_void,
@@ -3987,20 +4244,50 @@ unsafe extern "system" fn dw5_gra3(
     if out.is_null() || run.is_null() {
         return E_INVALIDARG;
     }
-    let clamped_mode = mode.clamp(0, DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC);
+    // Windows 7's `IDWriteGlyphRunAnalysis` created with `DEFAULT` (when OS font
+    // smoothing is disabled in Classic theme) or `ALIASED (1)` rejects
+    // `DWRITE_TEXTURE_CLEARTYPE_3X1` with `E_INVALIDARG`. Always open the
+    // underlying analysis in a ClearType-capable mode (`2..=5`) first so both
+    // `CLEARTYPE_3X1` and converted `ALIASED_1X1` grayscale textures work,
+    // falling back to `ALIASED` only if a bitmap-only strike rejects ClearType.
+    let ct_mode =
+        if (DWRITE_RENDERING_MODE_GDI_CLASSIC..=DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC)
+            .contains(&mode)
+        {
+            mode
+        } else {
+            DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC
+        };
     let mut raw_gra = ptr::null_mut();
-    let hr = unsafe { dw5_gra0(this, run, 1.0, xform, clamped_mode, measure, bx, by, &mut raw_gra) };
+    let mut raw_is_cleartype = true;
+    let mut hr =
+        unsafe { dw5_gra0(this, run, 1.0, xform, ct_mode, measure, bx, by, &mut raw_gra) };
+    if hr < 0 || raw_gra.is_null() {
+        raw_gra = ptr::null_mut();
+        raw_is_cleartype = false;
+        hr = unsafe {
+            dw5_gra0(
+                this,
+                run,
+                1.0,
+                xform,
+                DWRITE_RENDERING_MODE_ALIASED,
+                measure,
+                bx,
+                by,
+                &mut raw_gra,
+            )
+        };
+    }
     if hr < 0 || raw_gra.is_null() {
         unsafe { *out = ptr::null_mut() };
         return hr;
     }
-    let convert_gray = antialias == DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE
-        && clamped_mode != DWRITE_RENDERING_MODE_ALIASED;
     let wrapped = Box::into_raw(Box::new(Win7GlyphRunAnalysis {
         vtbl: &GLYPH_RUN_ANALYSIS_VTBL,
         refs: AtomicU32::new(1),
         raw: raw_gra,
-        grayscale_from_cleartype: convert_gray,
+        raw_is_cleartype,
     }));
     unsafe { *out = wrapped.cast() };
     S_OK
@@ -4097,6 +4384,11 @@ unsafe extern "system" fn dw5_coll_from_set(
         unsafe { *out = ptr::null_mut() };
         return hr;
     }
+    unsafe { com_add_ref(raw_coll) };
+    custom_collections()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(SendPtr(raw_coll));
     unsafe { *out = wrap_collection1(raw_coll, raw) };
     S_OK
 }
@@ -4250,6 +4542,27 @@ static DWRITE_FACTORY5_VTBL: IDWriteFactory5_Vtbl = IDWriteFactory5_Vtbl {
     UnpackFontFile: dw5_unpack,
 };
 
+unsafe fn wrap_raw_dwrite_factory(
+    raw_factory: *mut c_void,
+    iid: *const GUID,
+    out: *mut *mut c_void,
+) -> HRESULT {
+    unsafe {
+        let _ = ((*com_vtbl::<IDWriteFactory_Vtbl>(raw_factory)).RegisterFontCollectionLoader)(
+            raw_factory,
+            ptr::addr_of!(GLOBAL_COLLECTION_LOADER).cast_mut().cast(),
+        );
+    }
+    let wrapped = Box::into_raw(Box::new(Win7DWriteFactory5 {
+        vtbl: &DWRITE_FACTORY5_VTBL,
+        refs: AtomicU32::new(1),
+        raw: raw_factory,
+    }));
+    let qi_hr = unsafe { dw5_qi(wrapped.cast(), iid, out) };
+    unsafe { dw5_release(wrapped.cast()) };
+    qi_hr
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn DWriteCreateFactory(
     factory_type: i32,
@@ -4278,20 +4591,30 @@ pub unsafe extern "system" fn DWriteCreateFactory(
         unsafe { *out = ptr::null_mut() };
         return hr1;
     }
-    unsafe {
-        let _ = ((*com_vtbl::<IDWriteFactory_Vtbl>(raw_factory)).RegisterFontCollectionLoader)(
-            raw_factory,
-            ptr::addr_of!(GLOBAL_COLLECTION_LOADER).cast_mut().cast(),
-        );
+    unsafe { wrap_raw_dwrite_factory(raw_factory, iid, out) }
+}
+
+#[cfg(test)]
+pub unsafe fn create_win7_dwrite_factory5_for_test(out: *mut *mut c_void) -> HRESULT {
+    if out.is_null() {
+        return E_INVALIDARG;
     }
-    let wrapped = Box::into_raw(Box::new(Win7DWriteFactory5 {
-        vtbl: &DWRITE_FACTORY5_VTBL,
-        refs: AtomicU32::new(1),
-        raw: raw_factory,
-    }));
-    let qi_hr = unsafe { dw5_qi(wrapped.cast(), iid, out) };
-    unsafe { dw5_release(wrapped.cast()) };
-    qi_hr
+    static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
+    let Some(addr) = (unsafe {
+        resolve_cached(&SLOT, &DWRITE_W, true, b"DWriteCreateFactory\0")
+    }) else {
+        unsafe { *out = ptr::null_mut() };
+        return E_NOINTERFACE;
+    };
+    let create: unsafe extern "system" fn(i32, *const GUID, *mut *mut c_void) -> HRESULT =
+        unsafe { core::mem::transmute(addr) };
+    let mut raw_factory = ptr::null_mut();
+    let hr1 = unsafe { create(0, &IID_IDWRITE_FACTORY, &mut raw_factory) };
+    if hr1 < 0 || raw_factory.is_null() {
+        unsafe { *out = ptr::null_mut() };
+        return hr1;
+    }
+    unsafe { wrap_raw_dwrite_factory(raw_factory, &IID_IDWRITE_FACTORY5, out) }
 }
 
 #[used]

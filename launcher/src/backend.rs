@@ -417,17 +417,7 @@ fn launcher_releases_in(list: &serde_json::Value) -> Vec<Release> {
 }
 
 fn parse_launcher_releases(list: &serde_json::Value) -> Vec<Release> {
-    let primary = launcher_asset();
-    let mut out = parse_releases(list, primary, is_launcher_tag);
-    if primary.is_some() && primary == LAUNCHER_LEGACY_ASSET {
-        let fallback = parse_releases(list, LAUNCHER_ASSET, is_launcher_tag);
-        for (r, fb) in out.iter_mut().zip(fallback) {
-            if r.asset.is_none() {
-                r.asset = fb.asset;
-            }
-        }
-    }
-    out
+    parse_releases(list, launcher_asset(), is_launcher_tag)
 }
 
 fn launcher_releases_in_with(
@@ -2717,7 +2707,7 @@ fn launcher_asset_for(appimage: bool, legacy: bool) -> Option<&'static str> {
     if appimage {
         LAUNCHER_APPIMAGE_ASSET
     } else if legacy {
-        LAUNCHER_LEGACY_ASSET.or(LAUNCHER_ASSET)
+        LAUNCHER_LEGACY_ASSET
     } else {
         LAUNCHER_ASSET
     }
@@ -2913,11 +2903,18 @@ pub fn self_update(release: &Release, progress: impl Fn(f32)) -> Result<(), Stri
         progress(1.0);
         return Ok(());
     }
-    let asset_name = match (launcher_asset(), LAUNCHER_LEGACY_ASSET, LAUNCHER_ASSET) {
-        (Some(p), Some(leg), Some(s)) if p == leg && url.ends_with(s) => Some(s),
-        (p, _, _) => p,
-    };
-    let sha256 = signed_digest(&release.tag, asset_name.unwrap_or_default())?;
+    if IS_LEGACY_BUILD {
+        let Some(legacy_asset) = LAUNCHER_LEGACY_ASSET else {
+            return Err("This launcher release has no Windows 7 Legacy build.".into());
+        };
+        if !url.ends_with(legacy_asset) {
+            return Err(format!(
+                "{} has no Windows 7 Legacy build ({legacy_asset}).",
+                release.tag
+            ));
+        }
+    }
+    let sha256 = signed_digest(&release.tag, launcher_asset().unwrap_or_default())?;
     let work = data_dir().join(".launcher-update");
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(&work).map_err(|e| e.to_string())?;
@@ -4129,8 +4126,7 @@ pub fn {f}("
     fn an_appimage_updates_with_the_appimage() {
         assert_eq!(launcher_asset_running_from(false), LAUNCHER_ASSET);
         assert_eq!(launcher_asset_running_from(true), LAUNCHER_APPIMAGE_ASSET);
-        let legacy = LAUNCHER_LEGACY_ASSET.or(LAUNCHER_ASSET);
-        assert_eq!(launcher_asset_for(false, true), legacy);
+        assert_eq!(launcher_asset_for(false, true), LAUNCHER_LEGACY_ASSET);
         assert_eq!(legacy_launcher_asset("linux", "x86_64"), None);
         assert_eq!(
             legacy_launcher_asset("windows", "x86_64"),
@@ -4140,6 +4136,26 @@ pub fn {f}("
         assert_eq!(
             launcher_asset_running_from(true),
             Some("horizon-launcher-linux-x86_64.AppImage")
+        );
+    }
+
+    /// Windows 7 Legacy builds must never fall back to `horizon-launcher-windows-x64.zip`:
+    /// non-legacy Windows releases import Windows 10+ APIs (`GetSystemTimePreciseAsFileTime`,
+    /// `icuuc.dll`) and would break the installed `horizon-launcher-legacy.exe` on restart.
+    #[test]
+    fn legacy_launcher_never_falls_back_to_standard_windows_asset() {
+        let legacy_asset = legacy_launcher_asset("windows", "x86_64");
+        let list = serde_json::json!([
+            {"tag_name": "launcher@0.2.99", "assets": [{"name": "horizon-launcher-windows-x64.zip", "browser_download_url": "std", "size": 123}]},
+            {"tag_name": "launcher@0.2.98", "assets": [{"name": "horizon-launcher-windows-x64-legacy.zip", "browser_download_url": "leg", "size": 456}]},
+        ]);
+        let parsed = parse_releases(&list, legacy_asset, is_launcher_tag);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].tag, "launcher@0.2.99");
+        assert_eq!(parsed[0].asset, None);
+        assert_eq!(
+            launcher_update_from(&parsed, "launcher@0.2.0").map(|r| r.tag),
+            Some("launcher@0.2.98".into())
         );
     }
 
