@@ -121,16 +121,16 @@ mod imp {
         pub data4: [u8; 8],
     }
 
-    #[repr(C)]
+    #[repr(transparent)]
     pub struct SRWLOCK {
-        pub ptr: *mut c_void,
+        pub ptr: core::cell::UnsafeCell<*mut c_void>,
     }
 
     unsafe impl Sync for SRWLOCK {}
 
-    #[repr(C)]
+    #[repr(transparent)]
     pub struct CONDITION_VARIABLE {
-        pub ptr: *mut c_void,
+        pub ptr: core::cell::UnsafeCell<*mut c_void>,
     }
 
     unsafe impl Sync for CONDITION_VARIABLE {}
@@ -145,10 +145,10 @@ mod imp {
         const fn new() -> Self {
             Self {
                 lock: SRWLOCK {
-                    ptr: ptr::null_mut(),
+                    ptr: core::cell::UnsafeCell::new(ptr::null_mut()),
                 },
                 cv: CONDITION_VARIABLE {
-                    ptr: ptr::null_mut(),
+                    ptr: core::cell::UnsafeCell::new(ptr::null_mut()),
                 },
             }
         }
@@ -526,6 +526,41 @@ mod imp {
         }
     );
 
+    pub(super) unsafe fn wait_on_address_win7(
+        address: *const c_void,
+        compare_address: *const c_void,
+        address_size: usize,
+        milliseconds: u32,
+    ) -> BOOL {
+        if !matches!(address_size, 1 | 2 | 4 | 8) || address.is_null() || compare_address.is_null() {
+            unsafe { SetLastError(ERROR_INVALID_PARAMETER) };
+            return 0;
+        }
+        let bucket = &WAIT_TABLE[super::wait_bucket_index(address as usize)];
+        let lock_ptr = bucket.lock.ptr.get().cast::<SRWLOCK>();
+        let cv_ptr = bucket.cv.ptr.get().cast::<CONDITION_VARIABLE>();
+        unsafe { AcquireSRWLockExclusive(lock_ptr) };
+        let mut ok = 1;
+        if unsafe { super::address_bytes_equal(address, compare_address, address_size) }
+            == Some(true)
+        {
+            ok = unsafe { SleepConditionVariableSRW(cv_ptr, lock_ptr, milliseconds, 0) };
+        }
+        unsafe { ReleaseSRWLockExclusive(lock_ptr) };
+        ok
+    }
+
+    pub(super) unsafe fn wake_by_address_win7(address: *const c_void) {
+        let bucket = &WAIT_TABLE[super::wait_bucket_index(address as usize)];
+        let lock_ptr = bucket.lock.ptr.get().cast::<SRWLOCK>();
+        let cv_ptr = bucket.cv.ptr.get().cast::<CONDITION_VARIABLE>();
+        unsafe {
+            AcquireSRWLockExclusive(lock_ptr);
+            ReleaseSRWLockExclusive(lock_ptr);
+            WakeAllConditionVariable(cv_ptr);
+        }
+    }
+
     define_shim!(
         WaitOnAddress,
         "__imp_WaitOnAddress",
@@ -544,22 +579,7 @@ mod imp {
                     unsafe { core::mem::transmute(addr) };
                 return unsafe { func(address, compare_address, address_size, milliseconds) };
             }
-            if !matches!(address_size, 1 | 2 | 4 | 8) || address.is_null() || compare_address.is_null() {
-                unsafe { SetLastError(ERROR_INVALID_PARAMETER) };
-                return 0;
-            }
-            let bucket = &WAIT_TABLE[super::wait_bucket_index(address as usize)];
-            let lock_ptr = ptr::addr_of!(bucket.lock).cast_mut();
-            let cv_ptr = ptr::addr_of!(bucket.cv).cast_mut();
-            unsafe { AcquireSRWLockExclusive(lock_ptr) };
-            let mut ok = 1;
-            if unsafe { super::address_bytes_equal(address, compare_address, address_size) }
-                == Some(true)
-            {
-                ok = unsafe { SleepConditionVariableSRW(cv_ptr, lock_ptr, milliseconds, 0) };
-            }
-            unsafe { ReleaseSRWLockExclusive(lock_ptr) };
-            ok
+            unsafe { wait_on_address_win7(address, compare_address, address_size, milliseconds) }
         }
     );
 
@@ -577,14 +597,7 @@ mod imp {
                 unsafe { func(address) };
                 return;
             }
-            let bucket = &WAIT_TABLE[super::wait_bucket_index(address as usize)];
-            let lock_ptr = ptr::addr_of!(bucket.lock).cast_mut();
-            let cv_ptr = ptr::addr_of!(bucket.cv).cast_mut();
-            unsafe {
-                AcquireSRWLockExclusive(lock_ptr);
-                ReleaseSRWLockExclusive(lock_ptr);
-                WakeAllConditionVariable(cv_ptr);
-            }
+            unsafe { wake_by_address_win7(address) };
         }
     );
 
@@ -602,14 +615,7 @@ mod imp {
                 unsafe { func(address) };
                 return;
             }
-            let bucket = &WAIT_TABLE[super::wait_bucket_index(address as usize)];
-            let lock_ptr = ptr::addr_of!(bucket.lock).cast_mut();
-            let cv_ptr = ptr::addr_of!(bucket.cv).cast_mut();
-            unsafe {
-                AcquireSRWLockExclusive(lock_ptr);
-                ReleaseSRWLockExclusive(lock_ptr);
-                WakeAllConditionVariable(cv_ptr);
-            }
+            unsafe { wake_by_address_win7(address) };
         }
     );
 
@@ -1697,5 +1703,66 @@ mod tests {
             );
         }
         super::init();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win7_wait_on_address_srwlock_fallback_wakes_across_threads() {
+        use super::imp::{wait_on_address_win7, wake_by_address_win7};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU32, Ordering},
+        };
+
+        let state = Arc::new(AtomicU32::new(0));
+        let zero = 0u32;
+        let one = 1u32;
+
+        let immediate = unsafe {
+            wait_on_address_win7(
+                ptr::from_ref(&*state).cast(),
+                ptr::from_ref(&one).cast(),
+                4,
+                5000,
+            )
+        };
+        assert_eq!(immediate, 1);
+
+        let timed_out = unsafe {
+            wait_on_address_win7(
+                ptr::from_ref(&*state).cast(),
+                ptr::from_ref(&zero).cast(),
+                4,
+                5,
+            )
+        };
+        assert_eq!(timed_out, 0);
+
+        let worker_state = Arc::clone(&state);
+        let ready = Arc::new(AtomicU32::new(0));
+        let worker_ready = Arc::clone(&ready);
+        let handle = std::thread::spawn(move || {
+            worker_ready.store(1, Ordering::Release);
+            while worker_state.load(Ordering::Acquire) == 0 {
+                let cmp = 0u32;
+                let ok = unsafe {
+                    wait_on_address_win7(
+                        ptr::from_ref(&*worker_state).cast(),
+                        ptr::from_ref(&cmp).cast(),
+                        4,
+                        2000,
+                    )
+                };
+                assert_eq!(ok, 1);
+            }
+        });
+
+        while ready.load(Ordering::Acquire) == 0 {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        state.store(1, Ordering::Release);
+        unsafe { wake_by_address_win7(ptr::from_ref(&*state).cast()) };
+        handle.join().expect("worker woke cleanly");
     }
 }
