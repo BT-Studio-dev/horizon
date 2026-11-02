@@ -53,7 +53,7 @@ permissions:
 
 concurrency:
   group: launcher-${{ github.ref == 'refs/heads/main' && 'release' || github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   # Test runs never reach the telemetry server: no live-count ping, no uploads (docs/telemetry.md).

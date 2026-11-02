@@ -128,10 +128,16 @@ pub const LAUNCHER_APPIMAGE_ASSET: Option<&str> = Some("horizon-launcher-linux-x
 pub const LAUNCHER_APPIMAGE_ASSET: Option<&str> = None;
 
 /// The Windows 7 SP1 64-bit Legacy launcher archive (`HORIZON_LAUNCHER_LEGACY=1`).
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-pub const LAUNCHER_LEGACY_ASSET: Option<&str> = Some("horizon-launcher-windows-x64-legacy.zip");
-#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
-pub const LAUNCHER_LEGACY_ASSET: Option<&str> = None;
+const fn legacy_launcher_asset(os: &str, arch: &str) -> Option<&'static str> {
+    if same(os, "windows") && same(arch, "x86_64") {
+        Some("horizon-launcher-windows-x64-legacy.zip")
+    } else {
+        None
+    }
+}
+
+pub const LAUNCHER_LEGACY_ASSET: Option<&str> =
+    legacy_launcher_asset(std::env::consts::OS, std::env::consts::ARCH);
 
 /// True when built with `HORIZON_LAUNCHER_LEGACY=1` (the Windows 7 64-bit Legacy build).
 pub const IS_LEGACY_BUILD: bool = matches!(option_env!("HORIZON_LAUNCHER_LEGACY"), Some("1"));
@@ -2697,8 +2703,8 @@ pub fn launcher_asset() -> Option<&'static str> {
 fn launcher_asset_for(appimage: bool, legacy: bool) -> Option<&'static str> {
     if appimage {
         LAUNCHER_APPIMAGE_ASSET
-    } else if legacy && LAUNCHER_LEGACY_ASSET.is_some() {
-        LAUNCHER_LEGACY_ASSET
+    } else if legacy {
+        LAUNCHER_LEGACY_ASSET.or(LAUNCHER_ASSET)
     } else {
         LAUNCHER_ASSET
     }
@@ -4106,19 +4112,17 @@ pub fn {f}("
     fn an_appimage_updates_with_the_appimage() {
         assert_eq!(launcher_asset_running_from(false), LAUNCHER_ASSET);
         assert_eq!(launcher_asset_running_from(true), LAUNCHER_APPIMAGE_ASSET);
+        let legacy = LAUNCHER_LEGACY_ASSET.or(LAUNCHER_ASSET);
+        assert_eq!(launcher_asset_for(false, true), legacy);
+        assert_eq!(legacy_launcher_asset("linux", "x86_64"), None);
         assert_eq!(
-            launcher_asset_for(false, true),
-            LAUNCHER_LEGACY_ASSET.or(LAUNCHER_ASSET)
+            legacy_launcher_asset("windows", "x86_64"),
+            Some("horizon-launcher-windows-x64-legacy.zip")
         );
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         assert_eq!(
             launcher_asset_running_from(true),
             Some("horizon-launcher-linux-x86_64.AppImage")
-        );
-        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        assert_eq!(
-            launcher_asset_for(false, true),
-            Some("horizon-launcher-windows-x64-legacy.zip")
         );
     }
 
