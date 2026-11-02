@@ -1153,22 +1153,34 @@ unsafe extern "system" fn ff3_rec_mode0(
     params: *mut c_void,
     mode: *mut i32,
 ) -> HRESULT {
+    if mode.is_null() {
+        return E_POINTER;
+    }
     let raw = unsafe { (*(this as *const Win7DWriteFontFace3)).raw_face };
-    let raw_params = unwrap_rendering_params(params);
+    let raw_params = unwrap_or_default_rendering_params(params);
+    if raw_params.is_null() {
+        unsafe { *mode = DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC };
+        return S_OK;
+    }
     let hr = unsafe {
         ((*com_vtbl::<IDWriteFontFace_Vtbl>(raw)).GetRecommendedRenderingMode)(
             raw, em, ppd, measure, raw_params, mode,
         )
     };
-    if hr >= 0 && !mode.is_null() {
+    if hr >= 0 {
         let m = unsafe { *mode };
         if !(DWRITE_RENDERING_MODE_GDI_CLASSIC..=DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC)
             .contains(&m)
         {
             unsafe { *mode = DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC };
         }
+        hr
+    } else if params.is_null() {
+        unsafe { *mode = DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC };
+        S_OK
+    } else {
+        hr
     }
-    hr
 }
 unsafe extern "system" fn ff3_gdi_metrics(
     this: *mut c_void,
@@ -2330,6 +2342,8 @@ struct Win7DWriteRenderingParams1 {
     raw: *mut c_void,
 }
 
+static DEFAULT_RENDERING_PARAMS: AtomicUsize = AtomicUsize::new(0);
+
 #[inline]
 fn unwrap_rendering_params(p: *mut c_void) -> *mut c_void {
     if !p.is_null()
@@ -2338,6 +2352,16 @@ fn unwrap_rendering_params(p: *mut c_void) -> *mut c_void {
         unsafe { (*(p as *const Win7DWriteRenderingParams1)).raw }
     } else {
         p
+    }
+}
+
+#[inline]
+fn unwrap_or_default_rendering_params(p: *mut c_void) -> *mut c_void {
+    let raw = unwrap_rendering_params(p);
+    if !raw.is_null() {
+        raw
+    } else {
+        DEFAULT_RENDERING_PARAMS.load(Ordering::Acquire) as *mut c_void
     }
 }
 
@@ -2593,7 +2617,7 @@ unsafe extern "system" fn gra_blend(
     ct: *mut f32,
 ) -> HRESULT {
     let raw = unsafe { (*(this as *const Win7GlyphRunAnalysis)).raw };
-    let raw_params = unwrap_rendering_params(params);
+    let raw_params = unwrap_or_default_rendering_params(params);
     unsafe {
         ((*com_vtbl::<IDWriteGlyphRunAnalysis_Vtbl>(raw)).GetAlphaBlendParams)(
             raw, raw_params, gamma, contrast, ct,
@@ -4552,6 +4576,22 @@ unsafe fn wrap_raw_dwrite_factory(
             raw_factory,
             ptr::addr_of!(GLOBAL_COLLECTION_LOADER).cast_mut().cast(),
         );
+    }
+    if DEFAULT_RENDERING_PARAMS.load(Ordering::Acquire) == 0 {
+        let mut default_rp = ptr::null_mut();
+        if unsafe {
+            ((*com_vtbl::<IDWriteFactory_Vtbl>(raw_factory)).CreateRenderingParams)(
+                raw_factory,
+                &mut default_rp,
+            )
+        } >= 0
+            && !default_rp.is_null()
+            && DEFAULT_RENDERING_PARAMS
+                .compare_exchange(0, default_rp as usize, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            unsafe { com_release(default_rp) };
+        }
     }
     let wrapped = Box::into_raw(Box::new(Win7DWriteFactory5 {
         vtbl: &DWRITE_FACTORY5_VTBL,
