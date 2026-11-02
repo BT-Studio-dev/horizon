@@ -7347,7 +7347,7 @@ mod tests {
             by: f32,
             measure: i32,
             run: *const DWRITE_GLYPH_RUN,
-            _: *const DWRITE_GLYPH_RUN_DESCRIPTION,
+            _: *const c_void,
             _: *mut c_void,
         ) -> HRESULT {
             let me = unsafe { &mut *(this as *mut TestRenderer) };
@@ -7395,16 +7395,14 @@ mod tests {
             // (mode=1 ALIASED + CLEARTYPE_3x1), (mode=1 ALIASED + GRAYSCALE_1x1),
             // (mode=5 NATURAL_SYMMETRIC + CLEARTYPE_3x1), (mode=5 + GRAYSCALE_1x1).
             let single_glyph = unsafe { *r.glyphIndices };
+            let zero_offset = [0.0f32, 0.0f32];
             let single_run = DWRITE_GLYPH_RUN {
                 fontFace: face3,
                 fontEmSize: r.fontEmSize,
                 glyphCount: 1,
                 glyphIndices: &single_glyph,
                 glyphAdvances: &0.0,
-                glyphOffsets: &DWRITE_GLYPH_OFFSET {
-                    advanceOffset: 0.0,
-                    ascenderOffset: 0.0,
-                },
+                glyphOffsets: zero_offset.as_ptr().cast(),
                 isSideways: 0,
                 bidiLevel: 0,
             };
@@ -7417,7 +7415,7 @@ mod tests {
             ] {
                 let mut gra = ptr::null_mut();
                 let hr_gra = unsafe {
-                    (fac_vtbl.base.base.CreateGlyphRunAnalysis)(
+                    (fac_vtbl.base.base.CreateGlyphRunAnalysis3)(
                         me.factory5,
                         &single_run,
                         ptr::null(),
