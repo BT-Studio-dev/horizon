@@ -341,6 +341,83 @@ pub mod com_abi {
     }
 
     #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct D3D11_BUFFER_DESC {
+        pub ByteWidth: u32,
+        pub Usage: u32,
+        pub BindFlags: u32,
+        pub CPUAccessFlags: u32,
+        pub MiscFlags: u32,
+        pub StructureByteStride: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct D3D11_TEXTURE2D_DESC {
+        pub Width: u32,
+        pub Height: u32,
+        pub MipLevels: u32,
+        pub ArraySize: u32,
+        pub Format: u32,
+        pub SampleDesc: DXGI_SAMPLE_DESC,
+        pub Usage: u32,
+        pub BindFlags: u32,
+        pub CPUAccessFlags: u32,
+        pub MiscFlags: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct D3D11_SHADER_RESOURCE_VIEW_DESC {
+        pub Format: u32,
+        pub ViewDimension: u32,
+        pub u: [u32; 4],
+    }
+
+    /// Parses a DXBC container's `RDEF` resource table and returns the ASCII binding name of any
+    /// `D3D_SIT_STRUCTURED` (`type == 5`) resource bound to `register(t1)` (`bind_point == 1`).
+    pub fn dxbc_structured_t1_name(dxbc: &[u8]) -> Option<&[u8]> {
+        if dxbc.len() < 32 || &dxbc[0..4] != b"DXBC" {
+            return None;
+        }
+        let chunk_count = u32::from_le_bytes(dxbc[28..32].try_into().ok()?) as usize;
+        let table_end = 32usize.checked_add(chunk_count.checked_mul(4)?)?;
+        if table_end > dxbc.len() {
+            return None;
+        }
+        for i in 0..chunk_count {
+            let off_pos = 32 + i * 4;
+            let chunk_off = u32::from_le_bytes(dxbc[off_pos..off_pos + 4].try_into().ok()?) as usize;
+            let hdr = dxbc.get(chunk_off..chunk_off.checked_add(8)?)?;
+            if &hdr[0..4] != b"RDEF" {
+                continue;
+            }
+            let chunk_size = u32::from_le_bytes(hdr[4..8].try_into().ok()?) as usize;
+            let payload = dxbc.get(chunk_off + 8..(chunk_off + 8).checked_add(chunk_size)?)?;
+            if payload.len() < 28 {
+                return None;
+            }
+            let res_count = u32::from_le_bytes(payload[8..12].try_into().ok()?) as usize;
+            let res_off = u32::from_le_bytes(payload[12..16].try_into().ok()?) as usize;
+            let target_ver = u16::from_le_bytes(payload[16..18].try_into().ok()?);
+            let stride = if target_ver >= 0x0501 { 40usize } else { 32usize };
+            for r in 0..res_count {
+                let pos = res_off.checked_add(r.checked_mul(stride)?)?;
+                let rec = payload.get(pos..pos.checked_add(32)?)?;
+                let name_off = u32::from_le_bytes(rec[0..4].try_into().ok()?) as usize;
+                let res_type = u32::from_le_bytes(rec[4..8].try_into().ok()?);
+                let bind_point = u32::from_le_bytes(rec[20..24].try_into().ok()?);
+                if res_type == 5 && bind_point == 1 {
+                    let tail = payload.get(name_off..)?;
+                    let nul = tail.iter().position(|&b| b == 0)?;
+                    return Some(&tail[..nul]);
+                }
+            }
+        }
+        None
+    }
+
+    #[repr(C)]
     pub struct IDXGIAdapter_Vtbl {
         pub base: IDXGIObject_Vtbl,
         pub EnumOutputs: unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> HRESULT,
@@ -353,6 +430,202 @@ pub mod com_abi {
     pub struct IDXGIAdapter1_Vtbl {
         pub base: IDXGIAdapter_Vtbl,
         pub GetDesc1: unsafe extern "system" fn(*mut c_void, *mut DXGI_ADAPTER_DESC1) -> HRESULT,
+    }
+
+    #[repr(C)]
+    pub struct ID3D11DeviceChild_Vtbl {
+        pub base: IUnknown_Vtbl,
+        pub GetDevice: unsafe extern "system" fn(*mut c_void, *mut *mut c_void),
+        pub GetPrivateData:
+            unsafe extern "system" fn(*mut c_void, *const GUID, *mut u32, *mut c_void) -> HRESULT,
+        pub SetPrivateData:
+            unsafe extern "system" fn(*mut c_void, *const GUID, u32, *const c_void) -> HRESULT,
+        pub SetPrivateDataInterface:
+            unsafe extern "system" fn(*mut c_void, *const GUID, *mut c_void) -> HRESULT,
+    }
+
+    #[repr(C)]
+    pub struct ID3D11Resource_Vtbl {
+        pub base: ID3D11DeviceChild_Vtbl,
+        pub GetType: unsafe extern "system" fn(*mut c_void, *mut i32),
+        pub SetEvictionPriority: unsafe extern "system" fn(*mut c_void, u32),
+        pub GetEvictionPriority: unsafe extern "system" fn(*mut c_void) -> u32,
+    }
+
+    #[repr(C)]
+    pub struct ID3D11Buffer_Vtbl {
+        pub base: ID3D11Resource_Vtbl,
+        pub GetDesc: unsafe extern "system" fn(*mut c_void, *mut D3D11_BUFFER_DESC),
+    }
+
+    #[repr(C)]
+    pub struct ID3D11Device_Vtbl {
+        pub base: IUnknown_Vtbl,
+        pub CreateBuffer: unsafe extern "system" fn(
+            *mut c_void,
+            *const D3D11_BUFFER_DESC,
+            *const c_void,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreateTexture1D: unsafe extern "system" fn(
+            *mut c_void,
+            *const c_void,
+            *const c_void,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreateTexture2D: unsafe extern "system" fn(
+            *mut c_void,
+            *const D3D11_TEXTURE2D_DESC,
+            *const c_void,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreateTexture3D: unsafe extern "system" fn(
+            *mut c_void,
+            *const c_void,
+            *const c_void,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreateShaderResourceView: unsafe extern "system" fn(
+            *mut c_void,
+            *mut c_void,
+            *const D3D11_SHADER_RESOURCE_VIEW_DESC,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreateUnorderedAccessView: unsafe extern "system" fn(
+            *mut c_void,
+            *mut c_void,
+            *const c_void,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreateRenderTargetView: unsafe extern "system" fn(
+            *mut c_void,
+            *mut c_void,
+            *const c_void,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreateDepthStencilView: unsafe extern "system" fn(
+            *mut c_void,
+            *mut c_void,
+            *const c_void,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreateInputLayout: unsafe extern "system" fn(
+            *mut c_void,
+            *const c_void,
+            u32,
+            *const c_void,
+            usize,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreateVertexShader: unsafe extern "system" fn(
+            *mut c_void,
+            *const c_void,
+            usize,
+            *mut c_void,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreateGeometryShader: unsafe extern "system" fn(
+            *mut c_void,
+            *const c_void,
+            usize,
+            *mut c_void,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreateGeometryShaderWithStreamOutput: unsafe extern "system" fn(
+            *mut c_void,
+            *const c_void,
+            usize,
+            *const c_void,
+            u32,
+            *const u32,
+            u32,
+            u32,
+            *mut c_void,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreatePixelShader: unsafe extern "system" fn(
+            *mut c_void,
+            *const c_void,
+            usize,
+            *mut c_void,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreateHullShader: unsafe extern "system" fn(
+            *mut c_void,
+            *const c_void,
+            usize,
+            *mut c_void,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreateDomainShader: unsafe extern "system" fn(
+            *mut c_void,
+            *const c_void,
+            usize,
+            *mut c_void,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreateComputeShader: unsafe extern "system" fn(
+            *mut c_void,
+            *const c_void,
+            usize,
+            *mut c_void,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CreateClassLinkage:
+            unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT,
+        pub CreateBlendState:
+            unsafe extern "system" fn(*mut c_void, *const c_void, *mut *mut c_void) -> HRESULT,
+        pub CreateDepthStencilState:
+            unsafe extern "system" fn(*mut c_void, *const c_void, *mut *mut c_void) -> HRESULT,
+        pub CreateRasterizerState:
+            unsafe extern "system" fn(*mut c_void, *const c_void, *mut *mut c_void) -> HRESULT,
+        pub CreateSamplerState:
+            unsafe extern "system" fn(*mut c_void, *const c_void, *mut *mut c_void) -> HRESULT,
+        pub CreateQuery:
+            unsafe extern "system" fn(*mut c_void, *const c_void, *mut *mut c_void) -> HRESULT,
+        pub CreatePredicate:
+            unsafe extern "system" fn(*mut c_void, *const c_void, *mut *mut c_void) -> HRESULT,
+        pub CreateCounter:
+            unsafe extern "system" fn(*mut c_void, *const c_void, *mut *mut c_void) -> HRESULT,
+        pub CreateDeferredContext:
+            unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> HRESULT,
+        pub OpenSharedResource: unsafe extern "system" fn(
+            *mut c_void,
+            HANDLE,
+            *const GUID,
+            *mut *mut c_void,
+        ) -> HRESULT,
+        pub CheckFormatSupport:
+            unsafe extern "system" fn(*mut c_void, u32, *mut u32) -> HRESULT,
+        pub CheckMultisampleQualityLevels:
+            unsafe extern "system" fn(*mut c_void, u32, u32, *mut u32) -> HRESULT,
+        pub CheckCounterInfo: unsafe extern "system" fn(*mut c_void, *mut c_void),
+        pub CheckCounter: unsafe extern "system" fn(
+            *mut c_void,
+            *const c_void,
+            *mut i32,
+            *mut u32,
+            *mut u8,
+            *mut u32,
+            *mut u8,
+            *mut u32,
+            *mut u8,
+            *mut u32,
+        ) -> HRESULT,
+        pub CheckFeatureSupport:
+            unsafe extern "system" fn(*mut c_void, i32, *mut c_void, u32) -> HRESULT,
+        pub GetPrivateData:
+            unsafe extern "system" fn(*mut c_void, *const GUID, *mut u32, *mut c_void) -> HRESULT,
+        pub SetPrivateData:
+            unsafe extern "system" fn(*mut c_void, *const GUID, u32, *const c_void) -> HRESULT,
+        pub SetPrivateDataInterface:
+            unsafe extern "system" fn(*mut c_void, *const GUID, *mut c_void) -> HRESULT,
+        pub GetFeatureLevel: unsafe extern "system" fn(*mut c_void) -> u32,
+        pub GetCreationFlags: unsafe extern "system" fn(*mut c_void) -> u32,
+        pub GetDeviceRemovedReason: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+        pub GetImmediateContext: unsafe extern "system" fn(*mut c_void, *mut *mut c_void),
+        pub SetExceptionMode: unsafe extern "system" fn(*mut c_void, u32) -> HRESULT,
+        pub GetExceptionMode: unsafe extern "system" fn(*mut c_void) -> u32,
     }
 
     #[repr(C)]
@@ -1591,11 +1864,17 @@ mod imp {
     const D3D11_CREATE_DEVICE_BGRA_SUPPORT: u32 = 0x20;
     const D3D11_SDK_VERSION: u32 = 7;
     const D3D11_FEATURE_D3D10_X_HARDWARE_OPTIONS: i32 = 4;
+    const D3D11_BIND_SHADER_RESOURCE: u32 = 0x8;
+    const D3D11_RESOURCE_MISC_BUFFER_STRUCTURED: u32 = 0x40;
+    const DXGI_FORMAT_R32G32_UINT: u32 = 17;
+    const D3D_SRV_DIMENSION_BUFFER: u32 = 1;
     const DXGI_ADAPTER_FLAG_SOFTWARE: u32 = 2;
     const DXGI_MWA_NO_ALT_ENTER: u32 = 2;
     const DIRECTMANIPULATION_READY: i32 = 1;
 
     pub(super) const IID_IUNKNOWN: GUID = GUID::from_u128(0x00000000_0000_0000_c000_000000000046);
+    const IID_ID3D11_DEVICE: GUID = GUID::from_u128(0xdb6f6ddb_ac77_4e88_8253_819df9bbf140);
+    const IID_ID3D11_BUFFER: GUID = GUID::from_u128(0x48570b85_d1ee_4fcd_a250_eb350722b037);
 
     const IID_IDXGI_OBJECT: GUID = GUID::from_u128(0xaec22fb8_76f3_4639_9be0_28eb43a67a2e);
     const IID_IDXGI_DEVICE_SUB_OBJECT: GUID =
@@ -1729,6 +2008,7 @@ mod imp {
             cchWideChar: i32,
         ) -> i32;
         fn GetModuleFileNameW(hModule: HMODULE, lpFilename: *mut u16, nSize: u32) -> u32;
+        fn GetSystemDirectoryW(lpBuffer: *mut u16, uSize: u32) -> u32;
         fn GetModuleHandleExW(
             dwFlags: u32,
             lpModuleName: *const u16,
@@ -3077,11 +3357,45 @@ mod imp {
         *mut *mut c_void,
     ) -> HRESULT;
 
-    unsafe fn raw_d3d11_create_device() -> Option<D3D11CreateDeviceFn> {
+    pub(super) unsafe fn raw_d3d11_create_device() -> Option<D3D11CreateDeviceFn> {
         static SLOT: AtomicUsize = AtomicUsize::new(UNRESOLVED);
-        unsafe {
-            resolve_cached(&SLOT, &D3D11_W, true, b"D3D11CreateDevice\0")
-                .map(|addr| core::mem::transmute(addr))
+        let cached = SLOT.load(Ordering::Acquire);
+        if cached == MISSING {
+            return None;
+        }
+        if cached != UNRESOLVED {
+            return Some(unsafe { core::mem::transmute(cached) });
+        }
+        let mut sys_buf = [0u16; 520];
+        let sys_len =
+            unsafe { GetSystemDirectoryW(sys_buf.as_mut_ptr(), 500) } as usize;
+        let mut module: HMODULE = 0;
+        if sys_len > 0 && sys_len < 500 {
+            let mut pos = sys_len;
+            if sys_buf[pos - 1] != b'\\' as u16 && sys_buf[pos - 1] != b'/' as u16 {
+                sys_buf[pos] = b'\\' as u16;
+                pos += 1;
+            }
+            for &b in b"d3d11.dll" {
+                sys_buf[pos] = b as u16;
+                pos += 1;
+            }
+            sys_buf[pos] = 0;
+            module = unsafe { LoadLibraryW(sys_buf.as_ptr()) };
+        }
+        if module == 0 {
+            module = unsafe { LoadLibraryW(D3D11_W.as_ptr()) };
+        }
+        let addr = if module != 0 {
+            unsafe { GetProcAddress(module, b"D3D11CreateDevice\0".as_ptr()) as usize }
+        } else {
+            0
+        };
+        SLOT.store(if addr == 0 { MISSING } else { addr }, Ordering::Release);
+        if addr == 0 {
+            None
+        } else {
+            Some(unsafe { core::mem::transmute(addr) })
         }
     }
 
@@ -3183,6 +3497,711 @@ mod imp {
         (fl, ok)
     }
 
+    pub(super) const WIN7_QUAD_VS: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/win7_quad_vs.dxbc"));
+    pub(super) const WIN7_QUAD_PS: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/win7_quad_ps.dxbc"));
+    pub(super) const WIN7_SHADOW_VS: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/win7_shadow_vs.dxbc"));
+    pub(super) const WIN7_SHADOW_PS: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/win7_shadow_ps.dxbc"));
+    pub(super) const WIN7_PATH_RASTERIZATION_VS: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/win7_path_rasterization_vs.dxbc"));
+    pub(super) const WIN7_PATH_RASTERIZATION_PS: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/win7_path_rasterization_ps.dxbc"));
+    pub(super) const WIN7_PATH_SPRITE_VS: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/win7_path_sprite_vs.dxbc"));
+    pub(super) const WIN7_UNDERLINE_VS: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/win7_underline_vs.dxbc"));
+    pub(super) const WIN7_UNDERLINE_PS: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/win7_underline_ps.dxbc"));
+    pub(super) const WIN7_MONO_SPRITE_VS: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/win7_mono_sprite_vs.dxbc"));
+    pub(super) const WIN7_POLY_SPRITE_VS: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/win7_poly_sprite_vs.dxbc"));
+    pub(super) const WIN7_POLY_SPRITE_PS: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/win7_poly_sprite_ps.dxbc"));
+
+    fn replacement_vs_dxbc(bytecode: &[u8]) -> Option<&'static [u8]> {
+        match dxbc_structured_t1_name(bytecode)? {
+            b"quads" => Some(WIN7_QUAD_VS),
+            b"shadows" => Some(WIN7_SHADOW_VS),
+            b"path_rasterization_sprites" => Some(WIN7_PATH_RASTERIZATION_VS),
+            b"path_sprites" => Some(WIN7_PATH_SPRITE_VS),
+            b"underlines" => Some(WIN7_UNDERLINE_VS),
+            b"mono_sprites" => Some(WIN7_MONO_SPRITE_VS),
+            b"poly_sprites" => Some(WIN7_POLY_SPRITE_VS),
+            _ => None,
+        }
+    }
+
+    fn replacement_ps_dxbc(bytecode: &[u8]) -> Option<&'static [u8]> {
+        match dxbc_structured_t1_name(bytecode)? {
+            b"quads" => Some(WIN7_QUAD_PS),
+            b"shadows" => Some(WIN7_SHADOW_PS),
+            b"path_rasterization_sprites" => Some(WIN7_PATH_RASTERIZATION_PS),
+            b"underlines" => Some(WIN7_UNDERLINE_PS),
+            b"poly_sprites" => Some(WIN7_POLY_SPRITE_PS),
+            _ => None,
+        }
+    }
+
+    #[repr(C)]
+    struct Win7D3D11Device {
+        vtbl: *const ID3D11Device_Vtbl,
+        refs: AtomicU32,
+        raw: *mut c_void,
+    }
+
+    #[inline]
+    pub(super) fn wrap_d3d10_device(raw_device: *mut c_void) -> *mut c_void {
+        D3D11_STRUCTURED_OK.store(1, Ordering::Release);
+        Box::into_raw(Box::new(Win7D3D11Device {
+            vtbl: &D3D11_DEVICE_VTBL,
+            refs: AtomicU32::new(1),
+            raw: raw_device,
+        }))
+        .cast()
+    }
+
+    #[inline]
+    unsafe fn unwrap_d3d11_device(dev: *mut c_void) -> *mut c_void {
+        if !dev.is_null()
+            && unsafe { *(dev as *const usize) } == ptr::addr_of!(D3D11_DEVICE_VTBL) as usize
+        {
+            unsafe { (*(dev as *const Win7D3D11Device)).raw }
+        } else {
+            dev
+        }
+    }
+
+    unsafe extern "system" fn d3d_qi(
+        this: *mut c_void,
+        iid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        if out.is_null() {
+            return E_POINTER;
+        }
+        let g = unsafe { *iid };
+        if g == IID_IUNKNOWN || g == IID_ID3D11_DEVICE {
+            unsafe { d3d_add_ref(this) };
+            unsafe { *out = this };
+            return S_OK;
+        }
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<IUnknown_Vtbl>(raw)).QueryInterface)(raw, iid, out) }
+    }
+    unsafe extern "system" fn d3d_add_ref(this: *mut c_void) -> u32 {
+        let me = unsafe { &*(this as *const Win7D3D11Device) };
+        me.refs.fetch_add(1, Ordering::Relaxed) + 1
+    }
+    unsafe extern "system" fn d3d_release(this: *mut c_void) -> u32 {
+        let me = unsafe { &*(this as *const Win7D3D11Device) };
+        let prev = me.refs.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 {
+            let boxed = unsafe { Box::from_raw(this as *mut Win7D3D11Device) };
+            unsafe { com_release(boxed.raw) };
+            0
+        } else {
+            prev - 1
+        }
+    }
+    unsafe extern "system" fn d3d_create_buffer(
+        this: *mut c_void,
+        desc: *const D3D11_BUFFER_DESC,
+        initial_data: *const c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        if !desc.is_null() {
+            let mut d = unsafe { *desc };
+            if (d.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) != 0 {
+                d.ByteWidth = d.ByteWidth.max(8);
+                d.MiscFlags &= !D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+                d.StructureByteStride = 0;
+                return unsafe {
+                    ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateBuffer)(
+                        raw,
+                        &d,
+                        initial_data,
+                        out,
+                    )
+                };
+            }
+        }
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateBuffer)(raw, desc, initial_data, out) }
+    }
+    unsafe extern "system" fn d3d_create_tex1d(
+        this: *mut c_void,
+        desc: *const c_void,
+        initial_data: *const c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateTexture1D)(raw, desc, initial_data, out)
+        }
+    }
+    unsafe extern "system" fn d3d_create_tex2d(
+        this: *mut c_void,
+        desc: *const D3D11_TEXTURE2D_DESC,
+        initial_data: *const c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        let hr = unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateTexture2D)(raw, desc, initial_data, out)
+        };
+        if hr >= 0 || desc.is_null() {
+            return hr;
+        }
+        let mut d = unsafe { *desc };
+        if initial_data.is_null() && (d.Width > 8192 || d.Height > 8192) {
+            d.Width = d.Width.min(8192);
+            d.Height = d.Height.min(8192);
+            let hr_dim = unsafe {
+                ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateTexture2D)(raw, &d, initial_data, out)
+            };
+            if hr_dim >= 0 {
+                return hr_dim;
+            }
+        }
+        if d.SampleDesc.Count > 1 && d.SampleDesc.Quality != 0 {
+            d.SampleDesc.Quality = 0;
+            let hr2 = unsafe {
+                ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateTexture2D)(raw, &d, initial_data, out)
+            };
+            if hr2 >= 0 {
+                return hr2;
+            }
+        }
+        if d.SampleDesc.Count > 2 {
+            d.SampleDesc.Count = 2;
+            d.SampleDesc.Quality = 0;
+            let hr3 = unsafe {
+                ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateTexture2D)(raw, &d, initial_data, out)
+            };
+            if hr3 >= 0 {
+                return hr3;
+            }
+        }
+        if d.SampleDesc.Count > 1 {
+            d.SampleDesc.Count = 1;
+            d.SampleDesc.Quality = 0;
+            return unsafe {
+                ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateTexture2D)(raw, &d, initial_data, out)
+            };
+        }
+        hr
+    }
+    unsafe extern "system" fn d3d_create_tex3d(
+        this: *mut c_void,
+        desc: *const c_void,
+        initial_data: *const c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateTexture3D)(raw, desc, initial_data, out)
+        }
+    }
+    unsafe extern "system" fn d3d_create_srv(
+        this: *mut c_void,
+        resource: *mut c_void,
+        desc: *const D3D11_SHADER_RESOURCE_VIEW_DESC,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        if desc.is_null() && !resource.is_null() {
+            if let Some(buf_ptr) = unsafe { com_qi(resource, &IID_ID3D11_BUFFER) } {
+                let mut bdesc: D3D11_BUFFER_DESC = unsafe { core::mem::zeroed() };
+                unsafe {
+                    ((*com_vtbl::<ID3D11Buffer_Vtbl>(buf_ptr)).GetDesc)(buf_ptr, &mut bdesc);
+                    com_release(buf_ptr);
+                }
+                if (bdesc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) == 0
+                    && (bdesc.BindFlags & D3D11_BIND_SHADER_RESOURCE) != 0
+                {
+                    let srv_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+                        Format: DXGI_FORMAT_R32G32_UINT,
+                        ViewDimension: D3D_SRV_DIMENSION_BUFFER,
+                        u: [0, (bdesc.ByteWidth / 8).max(1), 0, 0],
+                    };
+                    return unsafe {
+                        ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateShaderResourceView)(
+                            raw, resource, &srv_desc, out,
+                        )
+                    };
+                }
+            }
+        }
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateShaderResourceView)(
+                raw, resource, desc, out,
+            )
+        }
+    }
+    unsafe extern "system" fn d3d_create_uav(
+        this: *mut c_void,
+        resource: *mut c_void,
+        desc: *const c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateUnorderedAccessView)(
+                raw, resource, desc, out,
+            )
+        }
+    }
+    unsafe extern "system" fn d3d_create_rtv(
+        this: *mut c_void,
+        resource: *mut c_void,
+        desc: *const c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateRenderTargetView)(raw, resource, desc, out)
+        }
+    }
+    unsafe extern "system" fn d3d_create_dsv(
+        this: *mut c_void,
+        resource: *mut c_void,
+        desc: *const c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateDepthStencilView)(raw, resource, desc, out)
+        }
+    }
+    unsafe extern "system" fn d3d_create_il(
+        this: *mut c_void,
+        elems: *const c_void,
+        num: u32,
+        bytecode: *const c_void,
+        len: usize,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateInputLayout)(
+                raw, elems, num, bytecode, len, out,
+            )
+        }
+    }
+    unsafe extern "system" fn d3d_create_vs(
+        this: *mut c_void,
+        bytecode: *const c_void,
+        len: usize,
+        linkage: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        if !bytecode.is_null() && len > 0 {
+            let slice = unsafe { core::slice::from_raw_parts(bytecode.cast::<u8>(), len) };
+            if let Some(repl) = replacement_vs_dxbc(slice) {
+                return unsafe {
+                    ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateVertexShader)(
+                        raw,
+                        repl.as_ptr().cast(),
+                        repl.len(),
+                        linkage,
+                        out,
+                    )
+                };
+            }
+        }
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateVertexShader)(
+                raw, bytecode, len, linkage, out,
+            )
+        }
+    }
+    unsafe extern "system" fn d3d_create_gs(
+        this: *mut c_void,
+        bytecode: *const c_void,
+        len: usize,
+        linkage: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateGeometryShader)(
+                raw, bytecode, len, linkage, out,
+            )
+        }
+    }
+    unsafe extern "system" fn d3d_create_gs_so(
+        this: *mut c_void,
+        bytecode: *const c_void,
+        len: usize,
+        so_decl: *const c_void,
+        num_entries: u32,
+        strides: *const u32,
+        num_strides: u32,
+        rasterized_stream: u32,
+        linkage: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateGeometryShaderWithStreamOutput)(
+                raw,
+                bytecode,
+                len,
+                so_decl,
+                num_entries,
+                strides,
+                num_strides,
+                rasterized_stream,
+                linkage,
+                out,
+            )
+        }
+    }
+    unsafe extern "system" fn d3d_create_ps(
+        this: *mut c_void,
+        bytecode: *const c_void,
+        len: usize,
+        linkage: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        if !bytecode.is_null() && len > 0 {
+            let slice = unsafe { core::slice::from_raw_parts(bytecode.cast::<u8>(), len) };
+            if let Some(repl) = replacement_ps_dxbc(slice) {
+                return unsafe {
+                    ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreatePixelShader)(
+                        raw,
+                        repl.as_ptr().cast(),
+                        repl.len(),
+                        linkage,
+                        out,
+                    )
+                };
+            }
+        }
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreatePixelShader)(
+                raw, bytecode, len, linkage, out,
+            )
+        }
+    }
+    unsafe extern "system" fn d3d_create_hs(
+        this: *mut c_void,
+        bytecode: *const c_void,
+        len: usize,
+        linkage: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateHullShader)(
+                raw, bytecode, len, linkage, out,
+            )
+        }
+    }
+    unsafe extern "system" fn d3d_create_ds(
+        this: *mut c_void,
+        bytecode: *const c_void,
+        len: usize,
+        linkage: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateDomainShader)(
+                raw, bytecode, len, linkage, out,
+            )
+        }
+    }
+    unsafe extern "system" fn d3d_create_cs(
+        this: *mut c_void,
+        bytecode: *const c_void,
+        len: usize,
+        linkage: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateComputeShader)(
+                raw, bytecode, len, linkage, out,
+            )
+        }
+    }
+    unsafe extern "system" fn d3d_create_cl(
+        this: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateClassLinkage)(raw, out) }
+    }
+    unsafe extern "system" fn d3d_create_bs(
+        this: *mut c_void,
+        desc: *const c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateBlendState)(raw, desc, out) }
+    }
+    unsafe extern "system" fn d3d_create_dss(
+        this: *mut c_void,
+        desc: *const c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateDepthStencilState)(raw, desc, out) }
+    }
+    unsafe extern "system" fn d3d_create_rs(
+        this: *mut c_void,
+        desc: *const c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateRasterizerState)(raw, desc, out) }
+    }
+    unsafe extern "system" fn d3d_create_ss(
+        this: *mut c_void,
+        desc: *const c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateSamplerState)(raw, desc, out) }
+    }
+    unsafe extern "system" fn d3d_create_query(
+        this: *mut c_void,
+        desc: *const c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateQuery)(raw, desc, out) }
+    }
+    unsafe extern "system" fn d3d_create_pred(
+        this: *mut c_void,
+        desc: *const c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreatePredicate)(raw, desc, out) }
+    }
+    unsafe extern "system" fn d3d_create_counter(
+        this: *mut c_void,
+        desc: *const c_void,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateCounter)(raw, desc, out) }
+    }
+    unsafe extern "system" fn d3d_create_def_ctx(
+        this: *mut c_void,
+        flags: u32,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CreateDeferredContext)(raw, flags, out) }
+    }
+    unsafe extern "system" fn d3d_open_shared(
+        this: *mut c_void,
+        handle: HANDLE,
+        iid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).OpenSharedResource)(raw, handle, iid, out)
+        }
+    }
+    unsafe extern "system" fn d3d_check_fmt(
+        this: *mut c_void,
+        fmt: u32,
+        out: *mut u32,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CheckFormatSupport)(raw, fmt, out) }
+    }
+    unsafe extern "system" fn d3d_check_msaa(
+        this: *mut c_void,
+        fmt: u32,
+        count: u32,
+        out: *mut u32,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CheckMultisampleQualityLevels)(
+                raw, fmt, count, out,
+            )
+        }
+    }
+    unsafe extern "system" fn d3d_check_counter_info(this: *mut c_void, info: *mut c_void) {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CheckCounterInfo)(raw, info) }
+    }
+    unsafe extern "system" fn d3d_check_counter(
+        this: *mut c_void,
+        desc: *const c_void,
+        ctype: *mut i32,
+        active: *mut u32,
+        name: *mut u8,
+        name_len: *mut u32,
+        units: *mut u8,
+        units_len: *mut u32,
+        description: *mut u8,
+        desc_len: *mut u32,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CheckCounter)(
+                raw,
+                desc,
+                ctype,
+                active,
+                name,
+                name_len,
+                units,
+                units_len,
+                description,
+                desc_len,
+            )
+        }
+    }
+    unsafe extern "system" fn d3d_check_feature(
+        this: *mut c_void,
+        feature: i32,
+        data: *mut c_void,
+        data_size: u32,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        let hr = unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).CheckFeatureSupport)(
+                raw, feature, data, data_size,
+            )
+        };
+        if feature == D3D11_FEATURE_D3D10_X_HARDWARE_OPTIONS && !data.is_null() && data_size >= 4 {
+            unsafe { *(data as *mut i32) = 1 };
+            return S_OK;
+        }
+        hr
+    }
+    unsafe extern "system" fn d3d_get_priv(
+        this: *mut c_void,
+        guid: *const GUID,
+        size: *mut u32,
+        data: *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).GetPrivateData)(raw, guid, size, data) }
+    }
+    unsafe extern "system" fn d3d_set_priv(
+        this: *mut c_void,
+        guid: *const GUID,
+        size: u32,
+        data: *const c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).SetPrivateData)(raw, guid, size, data) }
+    }
+    unsafe extern "system" fn d3d_set_priv_if(
+        this: *mut c_void,
+        guid: *const GUID,
+        unk: *mut c_void,
+    ) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe {
+            ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).SetPrivateDataInterface)(raw, guid, unk)
+        }
+    }
+    unsafe extern "system" fn d3d_get_fl(this: *mut c_void) -> u32 {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).GetFeatureLevel)(raw) }
+    }
+    unsafe extern "system" fn d3d_get_flags(this: *mut c_void) -> u32 {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).GetCreationFlags)(raw) }
+    }
+    unsafe extern "system" fn d3d_get_removed(this: *mut c_void) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).GetDeviceRemovedReason)(raw) }
+    }
+    unsafe extern "system" fn d3d_get_imm_ctx(this: *mut c_void, out: *mut *mut c_void) {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).GetImmediateContext)(raw, out) }
+    }
+    unsafe extern "system" fn d3d_set_exc(this: *mut c_void, flags: u32) -> HRESULT {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).SetExceptionMode)(raw, flags) }
+    }
+    unsafe extern "system" fn d3d_get_exc(this: *mut c_void) -> u32 {
+        let raw = unsafe { (*(this as *const Win7D3D11Device)).raw };
+        unsafe { ((*com_vtbl::<ID3D11Device_Vtbl>(raw)).GetExceptionMode)(raw) }
+    }
+
+    static D3D11_DEVICE_VTBL: ID3D11Device_Vtbl = ID3D11Device_Vtbl {
+        base: IUnknown_Vtbl {
+            QueryInterface: d3d_qi,
+            AddRef: d3d_add_ref,
+            Release: d3d_release,
+        },
+        CreateBuffer: d3d_create_buffer,
+        CreateTexture1D: d3d_create_tex1d,
+        CreateTexture2D: d3d_create_tex2d,
+        CreateTexture3D: d3d_create_tex3d,
+        CreateShaderResourceView: d3d_create_srv,
+        CreateUnorderedAccessView: d3d_create_uav,
+        CreateRenderTargetView: d3d_create_rtv,
+        CreateDepthStencilView: d3d_create_dsv,
+        CreateInputLayout: d3d_create_il,
+        CreateVertexShader: d3d_create_vs,
+        CreateGeometryShader: d3d_create_gs,
+        CreateGeometryShaderWithStreamOutput: d3d_create_gs_so,
+        CreatePixelShader: d3d_create_ps,
+        CreateHullShader: d3d_create_hs,
+        CreateDomainShader: d3d_create_ds,
+        CreateComputeShader: d3d_create_cs,
+        CreateClassLinkage: d3d_create_cl,
+        CreateBlendState: d3d_create_bs,
+        CreateDepthStencilState: d3d_create_dss,
+        CreateRasterizerState: d3d_create_rs,
+        CreateSamplerState: d3d_create_ss,
+        CreateQuery: d3d_create_query,
+        CreatePredicate: d3d_create_pred,
+        CreateCounter: d3d_create_counter,
+        CreateDeferredContext: d3d_create_def_ctx,
+        OpenSharedResource: d3d_open_shared,
+        CheckFormatSupport: d3d_check_fmt,
+        CheckMultisampleQualityLevels: d3d_check_msaa,
+        CheckCounterInfo: d3d_check_counter_info,
+        CheckCounter: d3d_check_counter,
+        CheckFeatureSupport: d3d_check_feature,
+        GetPrivateData: d3d_get_priv,
+        SetPrivateData: d3d_set_priv,
+        SetPrivateDataInterface: d3d_set_priv_if,
+        GetFeatureLevel: d3d_get_fl,
+        GetCreationFlags: d3d_get_flags,
+        GetDeviceRemovedReason: d3d_get_removed,
+        GetImmediateContext: d3d_get_imm_ctx,
+        SetExceptionMode: d3d_set_exc,
+        GetExceptionMode: d3d_get_exc,
+    };
+
+    unsafe fn maybe_wrap_d3d10_device(dev: *mut c_void, fl: u32, sb_ok: bool) -> *mut c_void {
+        if dev.is_null() {
+            return dev;
+        }
+        let force_d3d10 = std::env::var_os("HORIZON_FORCE_D3D10_SHADERS").is_some();
+        if (!sb_ok || force_d3d10) && fl >= D3D_FEATURE_LEVEL_10_1 {
+            append_d3d11_diag(&format!(
+                "Wrapping D3D device (fl=0x{:x}, native_sb={}) in Win7D3D11Device (Buffer<uint2> emulation)",
+                fl, sb_ok
+            ));
+            wrap_d3d10_device(dev)
+        } else {
+            dev
+        }
+    }
+
     unsafe fn call_d3d11_filtered(
         func: D3D11CreateDeviceFn,
         adapter: *mut c_void,
@@ -3277,6 +4296,7 @@ mod imp {
                 warp_hr as u32, actual_fl, sb_ok
             ));
             if sb_ok {
+                let out_dev = unsafe { maybe_wrap_d3d10_device(dev, actual_fl, sb_ok) };
                 if !fl_out.is_null() {
                     unsafe { *fl_out = fl };
                 }
@@ -3284,9 +4304,9 @@ mod imp {
                     unsafe { *ctx_out = ctx };
                 }
                 if !device_out.is_null() {
-                    unsafe { *device_out = dev };
+                    unsafe { *device_out = out_dev };
                 } else {
-                    unsafe { com_release(dev) };
+                    unsafe { com_release(out_dev) };
                 }
                 return warp_hr;
             }
@@ -3409,6 +4429,8 @@ mod imp {
         }
 
         if warp_hr >= 0 && !dev.is_null() {
+            let (actual_fl, sb_ok) = unsafe { device_supports_structured_buffers(dev) };
+            let out_dev = unsafe { maybe_wrap_d3d10_device(dev, actual_fl, sb_ok) };
             if !fl_out.is_null() {
                 unsafe { *fl_out = fl };
             }
@@ -3416,9 +4438,9 @@ mod imp {
                 unsafe { *ctx_out = ctx };
             }
             if !device_out.is_null() {
-                unsafe { *device_out = dev };
+                unsafe { *device_out = out_dev };
             } else {
-                unsafe { com_release(dev) };
+                unsafe { com_release(out_dev) };
             }
         } else {
             if !ctx_out.is_null() {
@@ -3731,6 +4753,9 @@ mod imp {
                     "HW D3D11CreateDevice: hr=0x{:08x} fl=0x{:x} structured_buffer={}",
                     hr as u32, fl, sb_ok
                 ));
+                unsafe {
+                    *device = maybe_wrap_d3d10_device(created, fl, sb_ok);
+                }
             } else {
                 append_d3d11_diag(&format!(
                     "HW D3D11CreateDevice: failed hr=0x{:08x}",
@@ -3761,8 +4786,9 @@ mod imp {
         if hr < 0 || device.is_null() {
             return None;
         }
+        let raw_dev = unsafe { unwrap_d3d11_device(device) };
         let mut raw_adapter = ptr::null_mut();
-        if let Some(dxgi_dev) = unsafe { com_qi(device, &IID_IDXGI_DEVICE) } {
+        if let Some(dxgi_dev) = unsafe { com_qi(raw_dev, &IID_IDXGI_DEVICE) } {
             let _ = unsafe {
                 ((*com_vtbl::<IDXGIDevice_Vtbl>(dxgi_dev)).GetAdapter)(dxgi_dev, &mut raw_adapter)
             };
@@ -4159,7 +5185,8 @@ mod imp {
         device: *mut c_void,
         fallback_raw_factory: *mut c_void,
     ) -> (*mut c_void, bool) {
-        if let Some(dxgi_dev) = unsafe { com_qi(device, &IID_IDXGI_DEVICE) } {
+        let raw_dev = unsafe { unwrap_d3d11_device(device) };
+        if let Some(dxgi_dev) = unsafe { com_qi(raw_dev, &IID_IDXGI_DEVICE) } {
             let mut adapter = ptr::null_mut();
             let hr = unsafe {
                 ((*com_vtbl::<IDXGIDevice_Vtbl>(dxgi_dev)).GetAdapter)(dxgi_dev, &mut adapter)
@@ -4248,12 +5275,13 @@ mod imp {
         desc: *const DXGI_SWAP_CHAIN_DESC,
         out: *mut *mut c_void,
     ) -> HRESULT {
+        let raw_dev = unsafe { unwrap_d3d11_device(device) };
         let raw = unsafe { (*(this as *const Win7DxgiFactory6)).raw };
-        let (target_factory, owns_ref) = unsafe { resolve_factory_for_device(device, raw) };
+        let (target_factory, owns_ref) = unsafe { resolve_factory_for_device(raw_dev, raw) };
         let hr = unsafe {
             ((*com_vtbl::<IDXGIFactory_Vtbl>(target_factory)).CreateSwapChain)(
                 target_factory,
-                device,
+                raw_dev,
                 desc,
                 out,
             )
@@ -4325,13 +5353,14 @@ mod imp {
         if out.is_null() || desc.is_null() {
             return E_INVALIDARG;
         }
+        let raw_dev = unsafe { unwrap_d3d11_device(device) };
         let me = unsafe { &*(this as *const Win7DxgiFactory6) };
         if has_dcomp() {
             if let Some(f2) = unsafe { com_qi(me.raw, &IID_IDXGI_FACTORY2) } {
                 let hr = unsafe {
                     ((*com_vtbl::<IDXGIFactory2_Vtbl>(f2)).CreateSwapChainForHwnd)(
                         f2,
-                        device,
+                        raw_dev,
                         hwnd,
                         desc,
                         fullscreen_desc,
@@ -4366,12 +5395,12 @@ mod imp {
             SwapEffect: 0,
             Flags: d.Flags,
         };
-        let (target_factory, owns_ref) = unsafe { resolve_factory_for_device(device, me.raw) };
+        let (target_factory, owns_ref) = unsafe { resolve_factory_for_device(raw_dev, me.raw) };
         let mut raw_sc = ptr::null_mut();
         let hr = unsafe {
             ((*com_vtbl::<IDXGIFactory_Vtbl>(target_factory)).CreateSwapChain)(
                 target_factory,
-                device,
+                raw_dev,
                 &legacy,
                 &mut raw_sc,
             )
@@ -5877,5 +6906,224 @@ mod tests {
         assert_eq!(size_of::<IDirectManipulationManager_Vtbl>(), 10 * word);
         assert_eq!(size_of::<IDirectManipulationUpdateManager_Vtbl>(), 6 * word);
         assert_eq!(size_of::<IDirectManipulationViewport_Vtbl>(), 31 * word);
+        assert_eq!(size_of::<ID3D11DeviceChild_Vtbl>(), 7 * word);
+        assert_eq!(size_of::<ID3D11Resource_Vtbl>(), 10 * word);
+        assert_eq!(size_of::<ID3D11Buffer_Vtbl>(), 11 * word);
+        assert_eq!(size_of::<ID3D11Device_Vtbl>(), 43 * word);
+        assert_eq!(size_of::<D3D11_BUFFER_DESC>(), 24);
+        assert_eq!(size_of::<D3D11_TEXTURE2D_DESC>(), 44);
+        assert_eq!(size_of::<D3D11_SHADER_RESOURCE_VIEW_DESC>(), 24);
+    }
+
+    fn build_synthetic_rdef_dxbc(target_ver: u16, entries: &[(&[u8], u32, u32)]) -> Vec<u8> {
+        let stride = if target_ver >= 0x0501 { 40usize } else { 32usize };
+        let res_offset = 28usize;
+        let strings_start = res_offset + entries.len() * stride;
+        let mut body = vec![0u8; strings_start];
+        body[8..12].copy_from_slice(&(entries.len() as u32).to_le_bytes());
+        body[12..16].copy_from_slice(&(res_offset as u32).to_le_bytes());
+        body[16..18].copy_from_slice(&target_ver.to_le_bytes());
+
+        for (i, &(name, res_type, bind_point)) in entries.iter().enumerate() {
+            let name_off = body.len() as u32;
+            body.extend_from_slice(name);
+            body.push(0);
+            let rec = res_offset + i * stride;
+            body[rec..rec + 4].copy_from_slice(&name_off.to_le_bytes());
+            body[rec + 4..rec + 8].copy_from_slice(&res_type.to_le_bytes());
+            body[rec + 20..rec + 24].copy_from_slice(&bind_point.to_le_bytes());
+            body[rec + 24..rec + 28].copy_from_slice(&1u32.to_le_bytes());
+        }
+
+        let total_size = 44 + body.len();
+        let mut dxbc = Vec::with_capacity(total_size);
+        dxbc.extend_from_slice(b"DXBC");
+        dxbc.extend_from_slice(&[0u8; 16]);
+        dxbc.extend_from_slice(&1u32.to_le_bytes());
+        dxbc.extend_from_slice(&(total_size as u32).to_le_bytes());
+        dxbc.extend_from_slice(&1u32.to_le_bytes());
+        dxbc.extend_from_slice(&36u32.to_le_bytes());
+        dxbc.extend_from_slice(b"RDEF");
+        dxbc.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        dxbc.extend_from_slice(&body);
+        dxbc
+    }
+
+    #[test]
+    fn dxbc_structured_t1_name_parses_rdef_chunks() {
+        assert_eq!(dxbc_structured_t1_name(b""), None);
+        assert_eq!(dxbc_structured_t1_name(b"DXBCshort"), None);
+
+        for name in [
+            &b"quads"[..],
+            &b"shadows"[..],
+            &b"path_rasterization_sprites"[..],
+            &b"path_sprites"[..],
+            &b"underlines"[..],
+            &b"mono_sprites"[..],
+            &b"poly_sprites"[..],
+        ] {
+            let sm41 = build_synthetic_rdef_dxbc(
+                0x0401,
+                &[(b"fast_clip_shapes", 2, 15), (name, 5, 1), (b"t_sprite", 2, 0)],
+            );
+            assert_eq!(dxbc_structured_t1_name(&sm41), Some(name));
+
+            let sm51 = build_synthetic_rdef_dxbc(0x0501, &[(name, 5, 1)]);
+            assert_eq!(dxbc_structured_t1_name(&sm51), Some(name));
+        }
+
+        // Typed Buffer<uint2> (`D3D_SIT_TBUFFER`/`D3D_SIT_TEXTURE`, not `D3D_SIT_STRUCTURED = 5`)
+        // or structured buffers at registers other than t1 must NOT match.
+        let typed_buf = build_synthetic_rdef_dxbc(0x0401, &[(b"d3d10_instance_buf", 2, 1)]);
+        assert_eq!(dxbc_structured_t1_name(&typed_buf), None);
+        let other_slot = build_synthetic_rdef_dxbc(0x0401, &[(b"quads", 5, 2)]);
+        assert_eq!(dxbc_structured_t1_name(&other_slot), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win7_d3d10_shaders_and_device_wrapper_work_on_warp_fl10_1() {
+        use super::imp::{
+            WIN7_MONO_SPRITE_VS, WIN7_PATH_RASTERIZATION_PS, WIN7_PATH_RASTERIZATION_VS,
+            WIN7_PATH_SPRITE_VS, WIN7_POLY_SPRITE_PS, WIN7_POLY_SPRITE_VS, WIN7_QUAD_PS,
+            WIN7_QUAD_VS, WIN7_SHADOW_PS, WIN7_SHADOW_VS, WIN7_UNDERLINE_PS, WIN7_UNDERLINE_VS,
+            raw_d3d11_create_device, wrap_d3d10_device,
+        };
+
+        let vs_blobs: &[(&[u8], &[u8])] = &[
+            (b"quads", WIN7_QUAD_VS),
+            (b"shadows", WIN7_SHADOW_VS),
+            (b"path_rasterization_sprites", WIN7_PATH_RASTERIZATION_VS),
+            (b"path_sprites", WIN7_PATH_SPRITE_VS),
+            (b"underlines", WIN7_UNDERLINE_VS),
+            (b"mono_sprites", WIN7_MONO_SPRITE_VS),
+            (b"poly_sprites", WIN7_POLY_SPRITE_VS),
+        ];
+        let ps_blobs: &[(&[u8], &[u8])] = &[
+            (b"quads", WIN7_QUAD_PS),
+            (b"shadows", WIN7_SHADOW_PS),
+            (b"path_rasterization_sprites", WIN7_PATH_RASTERIZATION_PS),
+            (b"underlines", WIN7_UNDERLINE_PS),
+            (b"poly_sprites", WIN7_POLY_SPRITE_PS),
+        ];
+
+        for &(_, blob) in vs_blobs.iter().chain(ps_blobs.iter()) {
+            assert!(blob.len() > 64 && &blob[..4] == b"DXBC");
+            assert_eq!(dxbc_structured_t1_name(blob), None);
+        }
+
+        unsafe {
+            let create = raw_d3d11_create_device().expect("System32 d3d11.dll!D3D11CreateDevice");
+            let fl_10_1: u32 = 0xa100;
+            let mut raw_dev: *mut c_void = ptr::null_mut();
+            let mut chosen_fl: u32 = 0;
+            let mut imm_ctx: *mut c_void = ptr::null_mut();
+            let hr = create(
+                ptr::null_mut(),
+                5,    // D3D_DRIVER_TYPE_WARP
+                0,
+                0x20, // D3D11_CREATE_DEVICE_BGRA_SUPPORT
+                &fl_10_1,
+                1,
+                7,    // D3D11_SDK_VERSION
+                &mut raw_dev,
+                &mut chosen_fl,
+                &mut imm_ctx,
+            );
+            assert!(hr >= 0 && !raw_dev.is_null(), "WARP FL 10_1 failed: 0x{:08x}", hr as u32);
+            assert_eq!(chosen_fl, fl_10_1);
+
+            let dev = wrap_d3d10_device(raw_dev);
+            let vtbl = &*(*(dev as *const *const ID3D11Device_Vtbl));
+
+            let mut hw_opts: i32 = 0;
+            let hr_feat = (vtbl.CheckFeatureSupport)(dev, 4, ptr::from_mut(&mut hw_opts).cast(), 4);
+            assert!(hr_feat >= 0 && hw_opts == 1);
+
+            for &(t1_name, _) in vs_blobs {
+                let fake_sb_vs = build_synthetic_rdef_dxbc(0x0401, &[(t1_name, 5, 1)]);
+                let mut vs: *mut c_void = ptr::null_mut();
+                let hr_vs = (vtbl.CreateVertexShader)(
+                    dev,
+                    fake_sb_vs.as_ptr().cast(),
+                    fake_sb_vs.len(),
+                    ptr::null_mut(),
+                    &mut vs,
+                );
+                assert!(
+                    hr_vs >= 0 && !vs.is_null(),
+                    "VS replacement for {:?} failed on FL 10_1: 0x{:08x}",
+                    core::str::from_utf8(t1_name),
+                    hr_vs as u32
+                );
+                ((*(*(vs as *const *const IUnknown_Vtbl))).Release)(vs);
+            }
+
+            for &(t1_name, _) in ps_blobs {
+                let fake_sb_ps = build_synthetic_rdef_dxbc(
+                    0x0401,
+                    &[(b"fast_clip_shapes", 2, 15), (t1_name, 5, 1)],
+                );
+                let mut ps: *mut c_void = ptr::null_mut();
+                let hr_ps = (vtbl.CreatePixelShader)(
+                    dev,
+                    fake_sb_ps.as_ptr().cast(),
+                    fake_sb_ps.len(),
+                    ptr::null_mut(),
+                    &mut ps,
+                );
+                assert!(
+                    hr_ps >= 0 && !ps.is_null(),
+                    "PS replacement for {:?} failed on FL 10_1: 0x{:08x}",
+                    core::str::from_utf8(t1_name),
+                    hr_ps as u32
+                );
+                ((*(*(ps as *const *const IUnknown_Vtbl))).Release)(ps);
+            }
+
+            // Validate gpui-fast's exact structured instance buffer + NULL-desc SRV sequence on FL 10_1.
+            let bdesc = D3D11_BUFFER_DESC {
+                ByteWidth: 128 * 160,
+                Usage: 2,              // D3D11_USAGE_DYNAMIC
+                BindFlags: 0x8,        // D3D11_BIND_SHADER_RESOURCE
+                CPUAccessFlags: 0x10000, // D3D11_CPU_ACCESS_WRITE
+                MiscFlags: 0x40,       // D3D11_RESOURCE_MISC_BUFFER_STRUCTURED
+                StructureByteStride: 160,
+            };
+            let mut buf: *mut c_void = ptr::null_mut();
+            let hr_buf = (vtbl.CreateBuffer)(dev, &bdesc, ptr::null(), &mut buf);
+            assert!(hr_buf >= 0 && !buf.is_null(), "CreateBuffer failed: 0x{:08x}", hr_buf as u32);
+
+            let mut srv: *mut c_void = ptr::null_mut();
+            let hr_srv = (vtbl.CreateShaderResourceView)(dev, buf, ptr::null(), &mut srv);
+            assert!(hr_srv >= 0 && !srv.is_null(), "CreateSRV failed: 0x{:08x}", hr_srv as u32);
+
+            // Validate MSAA 4x path intermediate texture creation on FL 10_1.
+            let tdesc = D3D11_TEXTURE2D_DESC {
+                Width: 256,
+                Height: 256,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: 87, // DXGI_FORMAT_B8G8R8A8_UNORM
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 4,
+                    Quality: 0xffff_ffff,
+                },
+                Usage: 0,
+                BindFlags: 0x20, // D3D11_BIND_RENDER_TARGET
+                CPUAccessFlags: 0,
+                MiscFlags: 0,
+            };
+            let mut tex: *mut c_void = ptr::null_mut();
+            let hr_tex = (vtbl.CreateTexture2D)(dev, &tdesc, ptr::null(), &mut tex);
+            assert!(hr_tex >= 0 && !tex.is_null(), "CreateTexture2D MSAA failed: 0x{:08x}", hr_tex as u32);
+
+            ((*(*(tex as *const *const IUnknown_Vtbl))).Release)(tex);
+            ((*(*(srv as *const *const IUnknown_Vtbl))).Release)(srv);
+            ((*(*(buf as *const *const IUnknown_Vtbl))).Release)(buf);
+            ((*(*(imm_ctx as *const *const IUnknown_Vtbl))).Release)(imm_ctx);
+            (vtbl.base.Release)(dev);
+        }
     }
 }

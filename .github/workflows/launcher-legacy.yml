@@ -68,7 +68,7 @@ jobs:
         run: |
           cargo test --release --locked > "$RUNNER_TEMP/test.log" 2>&1 || {
             cat "$RUNNER_TEMP/test.log"
-            grep -E '(FAILED|panicked|error\[|error:)' "$RUNNER_TEMP/test.log" | tail -n 8 | while IFS= read -r l; do echo "::error::$l"; done
+            grep -E '(FAILED|panicked|error\[|error:|error X|fxc failed)' "$RUNNER_TEMP/test.log" | tail -n 12 | while IFS= read -r l; do echo "::error::$l"; done
             exit 1
           }
           cat "$RUNNER_TEMP/test.log"
@@ -76,7 +76,7 @@ jobs:
         run: |
           cargo build --release --locked > "$RUNNER_TEMP/build.log" 2>&1 || {
             cat "$RUNNER_TEMP/build.log"
-            grep -E '(error\[|error:|LNK)' "$RUNNER_TEMP/build.log" | tail -n 8 | while IFS= read -r l; do echo "::error::$l"; done
+            grep -E '(panicked|error\[|error:|error X|fxc failed|LNK)' "$RUNNER_TEMP/build.log" | tail -n 12 | while IFS= read -r l; do echo "::error::$l"; done
             exit 1
           }
           cat "$RUNNER_TEMP/build.log"
