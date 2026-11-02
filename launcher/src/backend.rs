@@ -140,7 +140,10 @@ pub const LAUNCHER_LEGACY_ASSET: Option<&str> =
     legacy_launcher_asset(std::env::consts::OS, std::env::consts::ARCH);
 
 /// True when built with `HORIZON_LAUNCHER_LEGACY=1` (the Windows 7 64-bit Legacy build).
-pub const IS_LEGACY_BUILD: bool = matches!(option_env!("HORIZON_LAUNCHER_LEGACY"), Some("1"));
+pub const IS_LEGACY_BUILD: bool = match option_env!("HORIZON_LAUNCHER_LEGACY") {
+    Some(v) => same(v, "1"),
+    None => false,
+};
 
 const LAUNCHER_BINARY: &str = if cfg!(windows) {
     "horizon-launcher.exe"

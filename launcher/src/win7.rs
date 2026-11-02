@@ -1522,7 +1522,10 @@ mod imp {
     const REGDB_E_CLASSNOTREG: HRESULT = 0x8004_0154u32 as i32;
     const DXGI_ERROR_NOT_FOUND: HRESULT = 0x887A_0002u32 as i32;
     const HSTRING_REFERENCE_FLAG: u32 = 1;
-    const IS_LEGACY_BUILD: bool = matches!(option_env!("HORIZON_LAUNCHER_LEGACY"), Some("1"));
+    const IS_LEGACY_BUILD: bool = match option_env!("HORIZON_LAUNCHER_LEGACY") {
+        Some(v) => v.len() == 1 && v.as_bytes()[0] == b'1',
+        None => false,
+    };
 
     const ERROR_INVALID_PARAMETER: u32 = 87;
     const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
