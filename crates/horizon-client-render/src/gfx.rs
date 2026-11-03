@@ -8650,7 +8650,10 @@ mod tests {
         assert_eq!(order(GraphicsApi::OpenGl, "linux"), [Backends::GL]);
         // WGPU_BACKEND picks the backends itself; macOS has Metal only.
         for api in GraphicsApi::ALL {
-            assert_eq!(backend_order(api, "windows", true, true), [Backends::default()]);
+            assert_eq!(
+                backend_order(api, "windows", true, true),
+                [Backends::default()]
+            );
             assert_eq!(order(api, "macos"), [Backends::default()]);
         }
     }
