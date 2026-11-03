@@ -62,8 +62,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
-          workspaces: launcher
-          shared-key: launcher-windows
+          workspaces: |
+            . -> target
+            launcher -> launcher/target
+          shared-key: launcher-legacy-windows
       - name: Run unit tests
         run: |
           cargo test --release --locked > "$RUNNER_TEMP/test.log" 2>&1 || {
@@ -72,7 +74,7 @@ jobs:
             exit 1
           }
           cat "$RUNNER_TEMP/test.log"
-      - name: Build Legacy launcher (Windows 7 SP1 64-bit)
+      - name: Build Legacy launcher and Windows 7 game client (Windows 7 SP1 64-bit)
         run: |
           cargo build --release --locked > "$RUNNER_TEMP/build.log" 2>&1 || {
             cat "$RUNNER_TEMP/build.log"
@@ -80,6 +82,12 @@ jobs:
             exit 1
           }
           cat "$RUNNER_TEMP/build.log"
+          CARGO_PROFILE_RELEASE_STRIP=true cargo build --release --locked --manifest-path ../Cargo.toml -p horizon-client --bin horizon-client > "$RUNNER_TEMP/client-build.log" 2>&1 || {
+            cat "$RUNNER_TEMP/client-build.log"
+            grep -E '(panicked|error\[|error:|error X|fxc failed|LNK)' "$RUNNER_TEMP/client-build.log" | tail -n 12 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          }
+          cat "$RUNNER_TEMP/client-build.log"
       - name: Verify version output
         run: |
           out=$(target/release/horizon-launcher.exe --version)
@@ -88,7 +96,7 @@ jobs:
           [[ "$out" == "horizon-launcher $expected" ]] || { echo "::error::expected horizon-launcher $expected, got $out"; exit 1; }
       - name: Verify Windows 7 SP1 64-bit system library imports
         run: |
-          python ../tools/check_imports.py --win7 target/release/horizon-launcher.exe 2>&1 | tee "$RUNNER_TEMP/imp.log" || {
+          python ../tools/check_imports.py --win7 target/release/horizon-launcher.exe ../target/release/horizon-client.exe 2>&1 | tee "$RUNNER_TEMP/imp.log" || {
             while IFS= read -r l; do [[ -n "$l" ]] && echo "::error::$l"; done < "$RUNNER_TEMP/imp.log"
             exit 1
           }
@@ -105,15 +113,18 @@ jobs:
           retry() { for i in 1 2 3 4; do "$@" && return 0; sleep $((i * 15)); done; return 1; }
           retry "$launcher" versions
           "$launcher" links --json
+          ../target/release/horizon-client.exe --version
           rm -rf "$HORIZON_LAUNCHER_HOME"
       - name: Package Legacy Windows 7 x64 release archive
         run: |
           rm -rf dist out && mkdir -p dist out
           cp target/release/horizon-launcher.exe dist/horizon-launcher-legacy.exe
+          cp ../target/release/horizon-client.exe dist/horizon-client.exe
           cp target/release/horizon-launcher.exe out/horizon-launcher-legacy.exe
           cp target/release/horizon-launcher.exe out/horizon-launcher.exe
-          (cd dist && 7z a ../out/horizon-launcher-windows-x64-legacy.zip horizon-launcher-legacy.exe)
-          (cd out && sha256sum horizon-launcher-windows-x64-legacy.zip horizon-launcher-legacy.exe horizon-launcher.exe > SHA256SUMS)
+          cp ../target/release/horizon-client.exe out/horizon-client.exe
+          (cd dist && 7z a ../out/horizon-launcher-windows-x64-legacy.zip horizon-launcher-legacy.exe horizon-client.exe)
+          (cd out && sha256sum horizon-launcher-windows-x64-legacy.zip horizon-launcher-legacy.exe horizon-launcher.exe horizon-client.exe > SHA256SUMS)
           ls -lh out
           cat out/SHA256SUMS
       - uses: actions/upload-artifact@v4
@@ -123,6 +134,7 @@ jobs:
             launcher/out/horizon-launcher-windows-x64-legacy.zip
             launcher/out/horizon-launcher-legacy.exe
             launcher/out/horizon-launcher.exe
+            launcher/out/horizon-client.exe
             launcher/out/SHA256SUMS
           if-no-files-found: error
           retention-days: 14

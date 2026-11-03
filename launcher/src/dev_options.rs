@@ -21,9 +21,10 @@ impl Launcher {
         }
     }
 
-    /// The section, when revealed or when one of its options is on.
+    /// The section, when revealed, when one of its options is on, or when Microsoft sign-in is
+    /// not configured in this build.
     pub(super) fn dev_options_section(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if !self.dev_options && !self.settings.dev_offline {
+        if !self.dev_options && !self.settings.dev_offline && account::client_id().is_some() {
             return None;
         }
         let t = self.theme;

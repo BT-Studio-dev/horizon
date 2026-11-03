@@ -39,6 +39,18 @@ impl Launcher {
         }
     }
 
+    #[rustfmt::skip]
+    fn offline_without_account_action(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        shell::action("owner-offline", shell::Action::Main, &self.theme)
+            .child(shell::label(tr("Offline names without an account").to_string()))
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.settings.dev_offline = true;
+                this.settings.save();
+                this.close_owner_screen();
+                cx.notify();
+            }))
+    }
+
     pub(crate) fn owner_screen(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let t = self.theme;
         let n = t.night;
@@ -161,7 +173,7 @@ impl Launcher {
                 )
             }
             Shown::Starting(_) => None,
-            Shown::Error(_) if !configured => None,
+            Shown::Error(_) if !configured => Some(self.offline_without_account_action(cx)),
             _ => Some(
                 microsoft::sign_in_button("owner-sign-in", &t).on_click(cx.listener(
                     |this, _: &ClickEvent, _, cx| {

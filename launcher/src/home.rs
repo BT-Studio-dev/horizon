@@ -226,7 +226,7 @@ impl Launcher {
                         })
                 }));
         }
-        let mut play = action("play", Action::Main, &t)
+        let play = action("play", Action::Main, &t)
             .min_w(px(180.))
             .child(
                 div()
@@ -236,24 +236,7 @@ impl Launcher {
             .child(label(
                 tr(if running { "Running" } else { "Play" }).to_string(),
             ));
-        match play_press(ready, self.owner, self.preparing || running) {
-            PlayPress::Nothing => play = disabled(play),
-            PlayPress::Play => {
-                play = play.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.picker_open = false;
-                    this.play();
-                    cx.notify();
-                }))
-            }
-            PlayPress::PrepareThenPlay => {
-                play = play.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.picker_open = false;
-                    this.play_when_prepared = this.selected().cloned();
-                    this.prepare(backend::MinecraftFrom::Install);
-                    cx.notify();
-                }))
-            }
-        }
+        let play = self.bind_play_action(play, ready, running, cx);
         let folder = self.selected_instance().map(|i| i.home.clone());
         div()
             .flex()
@@ -279,6 +262,47 @@ impl Launcher {
                         cx.open_with_system(&home);
                     })
             }))
+    }
+
+    #[rustfmt::skip]
+    fn bind_play_action(
+        &self,
+        play: Stateful<Div>,
+        ready: bool,
+        running: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let busy = self.preparing || running;
+        let effective_owner = if self.settings.dev_offline {
+            Some(true)
+        } else {
+            self.owner
+        };
+        match play_press(ready, effective_owner, busy) {
+            PlayPress::Nothing if !busy && self.owner_shown() == Some(false) => {
+                play.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.picker_open = false;
+                    this.sign_in_to_play();
+                    cx.notify();
+                }))
+            }
+            PlayPress::Nothing => disabled(play),
+            PlayPress::Play => {
+                play.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.picker_open = false;
+                    this.play();
+                    cx.notify();
+                }))
+            }
+            PlayPress::PrepareThenPlay => {
+                play.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.picker_open = false;
+                    this.play_when_prepared = this.selected().cloned();
+                    this.prepare(backend::MinecraftFrom::Install);
+                    cx.notify();
+                }))
+            }
+        }
     }
 
     /// The card beside the hero, for a Horizon version: a line from a release's notes, and

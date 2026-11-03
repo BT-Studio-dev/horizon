@@ -1886,9 +1886,9 @@ pub fn preparer(
             .map_err(|e| e.to_string())?;
     }
     if let Some(binary) = binary {
-        if horizon_prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
-            == Some(horizon_prepare::SOURCES_SHA256)
-        {
+        let in_process = horizon_prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
+            == Some(horizon_prepare::SOURCES_SHA256);
+        if in_process || prefer_in_process_preparer(&binary) {
             let options = horizon_prepare::Options {
                 root: dir,
                 import: !reused,
@@ -1925,15 +1925,18 @@ pub fn preparer(
 /// install without them is a line in the log, never a failed preparation. The version's own
 /// preparer does it when it is not the launcher's and knows how; versions from before it read
 /// the sounds where the launcher's preparer puts them.
+#[rustfmt::skip]
 pub fn sounds(tag: &str, minecraft: &Path, log: &dyn Fn(String)) {
     let dir = version_dir(tag);
     let own = horizon_prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
         == Some(horizon_prepare::SOURCES_SHA256);
     let binary = preparer_binary(&dir).filter(|binary| {
-        !own && crate::process::command(binary)
-            .arg("--help")
-            .output()
-            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("horizon-prepare sounds"))
+        !own
+            && !prefer_in_process_preparer(binary)
+            && crate::process::command(binary)
+                .arg("--help")
+                .output()
+                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("horizon-prepare sounds"))
     });
     set_prepare_step(PrepareStep::Sounds);
     log("Copying the sounds from your Minecraft install".into());
@@ -2237,6 +2240,8 @@ pub fn client_command(tag: &str) -> Command {
 
 /// The game's program: on macOS the one inside the version's Horizon.app, so the Dock and Cmd+Tab
 /// show Horizon's name and icon (game_app.rs); the bare binary elsewhere, or if that fails.
+/// On Legacy Windows (< Windows 10), falls back to a Win7-compatible `horizon-client.exe` bundled
+/// beside the launcher when the downloaded version binary imports Windows 8+/10+ system DLLs.
 fn client_program(tag: &str) -> PathBuf {
     let dir = version_dir(tag);
     #[cfg(target_os = "macos")]
@@ -2244,11 +2249,180 @@ fn client_program(tag: &str) -> PathBuf {
         Ok(program) => return program,
         Err(e) => eprintln!("Starting the game outside {}: {e}", crate::game_app::APP),
     }
-    dir.join(CLIENT)
+    let exe = std::env::current_exe().ok();
+    resolve_client_program_with(&dir, exe.as_deref(), needs_win7_binary_compat())
 }
 
+#[rustfmt::skip]
+#[cfg(target_os = "windows")]
+fn is_windows_before_10() -> bool {
+    #[repr(C)]
+    struct OsVersionInfoW {
+        size: u32,
+        major: u32,
+        minor: u32,
+        build: u32,
+        platform: u32,
+        csd: [u16; 128],
+    }
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn RtlGetVersion(info: *mut OsVersionInfoW) -> i32;
+    }
+    let mut info = OsVersionInfoW {
+        size: std::mem::size_of::<OsVersionInfoW>() as u32,
+        major: 0,
+        minor: 0,
+        build: 0,
+        platform: 0,
+        csd: [0; 128],
+    };
+    let status = unsafe { RtlGetVersion(&mut info) };
+    status == 0 && info.major < 10
+}
+
+#[rustfmt::skip]
+fn needs_win7_binary_compat() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        IS_LEGACY_BUILD || is_windows_before_10()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+#[rustfmt::skip]
+fn prefer_in_process_preparer(binary: &Path) -> bool {
+    needs_win7_binary_compat() && pe_imports_post_win7(binary)
+}
+
+#[rustfmt::skip]
+fn resolve_client_program_with(
+    version_dir: &Path,
+    launcher_exe: Option<&Path>,
+    compat: bool,
+) -> PathBuf {
+    let version_client = version_dir.join(CLIENT);
+    if compat && pe_imports_post_win7(&version_client) {
+        if let Some(bundled) = launcher_exe
+            .and_then(Path::parent)
+            .map(|d| d.join(CLIENT))
+            .filter(|p| p.is_file() && !pe_imports_post_win7(p))
+        {
+            return bundled;
+        }
+    }
+    version_client
+}
+
+#[rustfmt::skip]
+fn pe_imports_post_win7(path: &Path) -> bool {
+    fs::read(path)
+        .map(|bytes| pe_imports_post_win7_bytes(&bytes))
+        .unwrap_or(false)
+}
+
+#[rustfmt::skip]
+fn pe_imports_post_win7_bytes(bytes: &[u8]) -> bool {
+    let read_u16 = |off: usize| -> Option<u16> {
+        Some(u16::from_le_bytes(bytes.get(off..off.checked_add(2)?)?.try_into().ok()?))
+    };
+    let read_u32 = |off: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(bytes.get(off..off.checked_add(4)?)?.try_into().ok()?))
+    };
+    if bytes.get(0..2) != Some(b"MZ") {
+        return false;
+    }
+    let Some(pe_off) = read_u32(0x3c).map(|v| v as usize) else {
+        return false;
+    };
+    if bytes.get(pe_off..pe_off.saturating_add(4)) != Some(b"PE\0\0") {
+        return false;
+    }
+    let coff = pe_off + 4;
+    let (Some(num_sections), Some(opt_size)) = (
+        read_u16(coff + 2).map(|v| v as usize),
+        read_u16(coff + 16).map(|v| v as usize),
+    ) else {
+        return false;
+    };
+    let opt = coff + 20;
+    let (num_rva, import_dir_off) = match read_u16(opt) {
+        Some(0x20b) => (read_u32(opt + 108), opt + 120),
+        Some(0x10b) => (read_u32(opt + 92), opt + 104),
+        _ => return false,
+    };
+    let (Some(num_rva), Some(import_rva), Some(import_size)) = (
+        num_rva,
+        read_u32(import_dir_off),
+        read_u32(import_dir_off + 4),
+    ) else {
+        return false;
+    };
+    if num_rva < 2 || import_rva == 0 || import_size == 0 {
+        return false;
+    }
+    let secs = opt.saturating_add(opt_size);
+    let rva_to_off = |rva: u32| -> Option<usize> {
+        for i in 0..num_sections.min(96) {
+            let s = secs.checked_add(i * 40)?;
+            let vsize = read_u32(s + 8)?;
+            let vaddr = read_u32(s + 12)?;
+            let rsize = read_u32(s + 16)?;
+            let rptr = read_u32(s + 20)?;
+            let span = vsize.max(rsize);
+            if rva >= vaddr && rva - vaddr < span && rva - vaddr < rsize {
+                return (rptr as usize).checked_add((rva - vaddr) as usize);
+            }
+        }
+        None
+    };
+    let Some(mut desc_off) = rva_to_off(import_rva) else {
+        return false;
+    };
+    for _ in 0..4096 {
+        let Some(name_rva) = read_u32(desc_off + 12) else {
+            break;
+        };
+        if name_rva == 0 {
+            break;
+        }
+        if let Some(name_off) = rva_to_off(name_rva) {
+            let slice = bytes.get(name_off..bytes.len().min(name_off + 256)).unwrap_or(&[]);
+            let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
+            if let Ok(raw) = std::str::from_utf8(&slice[..end]) {
+                let dll = raw.to_ascii_lowercase();
+                if dll == "api-ms-win-core-synch-l1-2-0.dll"
+                    || dll.starts_with("api-ms-win-core-winrt")
+                    || dll.starts_with("ext-ms-win-")
+                    || dll == "bcryptprimitives.dll"
+                    || dll == "icuuc.dll"
+                    || dll == "icuin.dll"
+                    || dll == "d3d12.dll"
+                {
+                    return true;
+                }
+            }
+        }
+        let Some(next) = desc_off.checked_add(20) else {
+            break;
+        };
+        desc_off = next;
+    }
+    false
+}
+
+#[rustfmt::skip]
 pub fn server_command(tag: &str, folder: &Path) -> Command {
-    let mut cmd = Command::new(version_dir(tag).join(CLIENT));
+    let exe = std::env::current_exe().ok();
+    let program = resolve_client_program_with(
+        &version_dir(tag),
+        exe.as_deref(),
+        needs_win7_binary_compat(),
+    );
+    let mut cmd = Command::new(program);
     cmd.current_dir(folder)
         .arg("--resources")
         .arg(resources(tag))
@@ -2962,9 +3136,20 @@ pub fn self_update(release: &Release, progress: impl Fn(f32)) -> Result<(), Stri
             exe_path().display()
         )
     })?;
+    update_bundled_client(&unpacked, exe_path());
     let _ = fs::remove_dir_all(&work);
     progress(1.0);
     Ok(())
+}
+
+#[rustfmt::skip]
+fn update_bundled_client(unpacked: &Path, launcher_exe: &Path) {
+    if !IS_LEGACY_BUILD {
+        return;
+    }
+    if let (Some(client), Some(dir)) = (find_file(unpacked, CLIENT), launcher_exe.parent()) {
+        let _ = replace_binary(&client, &dir.join(CLIENT));
+    }
 }
 
 fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
@@ -4157,6 +4342,64 @@ pub fn {f}("
             launcher_update_from(&parsed, "launcher@0.2.0").map(|r| r.tag),
             Some("launcher@0.2.98".into())
         );
+    }
+
+    #[rustfmt::skip]
+    #[test]
+    fn legacy_client_fallback_detects_post_win7_pe_imports() {
+        fn fake_pe64_importing(dll: &[u8]) -> Vec<u8> {
+            let mut pe = vec![0u8; 0x400];
+            pe[0..2].copy_from_slice(b"MZ");
+            pe[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+            pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+            pe[0x86..0x88].copy_from_slice(&1u16.to_le_bytes());
+            pe[0x94..0x96].copy_from_slice(&240u16.to_le_bytes());
+            pe[0x98..0x9a].copy_from_slice(&0x20bu16.to_le_bytes());
+            pe[0x104..0x108].copy_from_slice(&16u32.to_le_bytes());
+            pe[0x110..0x114].copy_from_slice(&0x1000u32.to_le_bytes());
+            pe[0x114..0x118].copy_from_slice(&40u32.to_le_bytes());
+            pe[0x190..0x194].copy_from_slice(&0x200u32.to_le_bytes());
+            pe[0x194..0x198].copy_from_slice(&0x1000u32.to_le_bytes());
+            pe[0x198..0x19c].copy_from_slice(&0x200u32.to_le_bytes());
+            pe[0x19c..0x1a0].copy_from_slice(&0x200u32.to_le_bytes());
+            pe[0x20c..0x210].copy_from_slice(&0x1030u32.to_le_bytes());
+            pe[0x230..0x230 + dll.len()].copy_from_slice(dll);
+            pe
+        }
+        let win7_clean = fake_pe64_importing(b"KERNEL32.dll");
+        let win8_synch = fake_pe64_importing(b"api-ms-win-core-synch-l1-2-0.dll");
+        let win8_prng = fake_pe64_importing(b"bcryptprimitives.dll");
+        assert!(!pe_imports_post_win7_bytes(&win7_clean));
+        assert!(pe_imports_post_win7_bytes(&win8_synch));
+        assert!(pe_imports_post_win7_bytes(&win8_prng));
+
+        let root = std::env::temp_dir().join(format!("horizon-win7-client-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let ver_dir = root.join("versions/nightly-test");
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&ver_dir).unwrap();
+        fs::create_dir_all(&bin_dir).unwrap();
+        let ver_client = ver_dir.join(CLIENT);
+        let bundled_client = bin_dir.join(CLIENT);
+        let launcher_exe = bin_dir.join(LAUNCHER_LEGACY_BINARY);
+        fs::write(&ver_client, &win8_synch).unwrap();
+        fs::write(&bundled_client, &win7_clean).unwrap();
+        fs::write(&launcher_exe, &win7_clean).unwrap();
+
+        assert_eq!(
+            resolve_client_program_with(&ver_dir, Some(&launcher_exe), true),
+            bundled_client
+        );
+        assert_eq!(
+            resolve_client_program_with(&ver_dir, Some(&launcher_exe), false),
+            ver_client
+        );
+        fs::write(&ver_client, &win7_clean).unwrap();
+        assert_eq!(
+            resolve_client_program_with(&ver_dir, Some(&launcher_exe), true),
+            ver_client
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// `$APPIMAGE` names the file the runtime mounted; a path that is not there (moved or deleted
