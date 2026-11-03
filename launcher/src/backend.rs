@@ -1653,7 +1653,7 @@ fn java(
     }
     let missing = match find(major, &runtimes) {
         Ok(jdk) => return Ok(jdk.home()),
-        Err(e) => e,
+        Err(e) => java_error(e),
     };
     let component = read_json(manifest)
         .and_then(|json| json["javaVersion"]["component"].as_str().map(String::from))
@@ -1678,11 +1678,31 @@ fn java(
         .map_err(|e| {
         format!("{missing}\n  • Horizon also tried to download Minecraft's own Java from Mojang, but: {e}")
     })?;
-    find(major, &[home]).map(|jdk| jdk.home())
+    find(major, &[home])
+        .map(|jdk| jdk.home())
+        .map_err(java_error)
 }
 
 /// The dynamic loader glibc programs on x86-64 Linux start through.
 pub(crate) const GLIBC_LOADER: &str = "/lib64/ld-linux-x86-64.so.2";
+
+/// What a Windows 7 (or 8) player can do when the Java 25 preparing needs is missing there:
+/// Java 25, which preparing needs, has no build that starts on Windows 7 (Mojang's needs
+/// Windows 10 or later), so the error says what to do instead of ending there.
+#[rustfmt::skip]
+const WINDOWS_7_JAVA: &str =
+    "Windows 7 cannot run the Java 25 preparing needs (Mojang's Java needs Windows 10 or later): \
+     prepare this version once on a Windows 10 or 11 computer, then copy its folder from \
+     versions in that launcher's data folder here, or point JAVA_HOME at a Java 25 that starts on \
+     this computer.";
+
+/// `error`, with [`WINDOWS_7_JAVA`] on Windows 7 and 8, where no Java 25 starts.
+fn java_error(error: String) -> String {
+    match needs_win7_binary_compat() {
+        true => format!("{error}\n  • {WINDOWS_7_JAVA}"),
+        false => error,
+    }
+}
 
 /// Runs `cmd` with Java at `home`: JAVA_HOME names it and its `bin` leads the PATH, as the
 /// versions' own preparers look for Java.
