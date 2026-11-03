@@ -63,9 +63,9 @@ jobs:
         if: runner.environment == 'github-hosted'
         with:
           workspaces: |
-            . -> target
-            launcher -> launcher/target
-          shared-key: launcher-legacy-windows
+            .
+            launcher
+          shared-key: verify-windows
       - name: Run unit tests
         run: |
           cargo test --release --locked > "$RUNNER_TEMP/test.log" 2>&1 || {
@@ -113,7 +113,7 @@ jobs:
           retry() { for i in 1 2 3 4; do "$@" && return 0; sleep $((i * 15)); done; return 1; }
           retry "$launcher" versions
           "$launcher" links --json
-          ../target/release/horizon-client.exe --version
+          ../target/release/horizon-client.exe --help | grep -q -- '--resources'
           rm -rf "$HORIZON_LAUNCHER_HOME"
       - name: Package Legacy Windows 7 x64 release archive
         run: |
