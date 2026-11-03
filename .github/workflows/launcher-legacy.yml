@@ -9,14 +9,12 @@ on:
     branches: [main, launcher, 'launcher-*', 'arena/*']
     paths:
       - 'launcher/**'
-      - 'crates/horizon-bench/**'
-      - 'crates/horizon-friends/**'
-      - 'crates/horizon-mods/**'
-      - 'crates/horizon-port-pack/**'
-      - 'crates/horizon-prepare/**'
-      - 'crates/horizon-release-sign/**'
-      - 'crates/horizon-telemetry/**'
-      - 'crates/horizon-theme/**'
+      # The zip also bundles horizon-client.exe, built from the game workspace:
+      # a client-only change (e.g. the renderer) must rebuild it, so every
+      # crate and the workspace lockfile count, not just the launcher's own.
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'packaging/icons/**'
       - 'tools/check_imports.py'
       - '.github/workflows/launcher-legacy.yml'
