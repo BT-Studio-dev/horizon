@@ -2105,9 +2105,29 @@ pub fn vulkan_start_crashed<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -
 /// The game's graphics settings file in its home (the game's `graphics.rs`).
 const GRAPHICS_FILE: &str = "horizon-graphics.txt";
 
+/// Whether DirectX 12 can load on this Windows: `d3d12.dll` in System32 (Windows 10 and
+/// newer). Elsewhere the answer is unused, and true. Asking the game for DirectX 12 where
+/// the DLL is missing (Windows 7 or 8) ends it at the renderer's start (0xc0000139), so
+/// there is nothing to switch to there.
+#[cfg(windows)]
+fn d3d12_loadable() -> bool {
+    let root = std::env::var_os("SystemRoot")
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    root.join("System32").join("d3d12.dll").is_file()
+}
+#[cfg(not(windows))]
+fn d3d12_loadable() -> bool {
+    true
+}
+
 /// Sets `graphicsApi:dx12` in `home`'s graphics settings when it is unset or `auto`, keeping
 /// every other line. True when it changed; a player's own `vulkan` or `dx12` stays.
 pub fn switch_to_dx12(home: &Path) -> Result<bool, String> {
+    if !d3d12_loadable() {
+        return Ok(false);
+    }
     let path = home.join(GRAPHICS_FILE);
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,

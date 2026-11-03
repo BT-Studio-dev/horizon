@@ -1244,6 +1244,33 @@ fn mip_chain(
     debug_assert_eq!(out.len(), chain_bytes * layers as usize);
     (out, levels)
 }
+/// Whether DirectX 12 can load on this Windows at all: `d3d12.dll` beside the
+/// program (the D3D12-on-Windows-7 runtime some games ship app-local) or in
+/// System32 (Windows 10 and newer). Where neither is (stock Windows 7 or 8),
+/// asking wgpu for a DX12 device does not fail cleanly: the process dies
+/// resolving a newer DXGI entry point (exit code 0xc0000139) before OpenGL
+/// gets its turn, so such a Windows is never offered the backend — Vulkan,
+/// loaded at run time, already fails over properly. Off Windows there is no
+/// DX12 to keep or drop.
+#[cfg(windows)]
+fn dx12_loadable() -> bool {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("d3d12.dll")))
+        .is_some_and(|dll| dll.is_file());
+    if beside {
+        return true;
+    }
+    let root = std::env::var_os("SystemRoot")
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    root.join("System32").join("d3d12.dll").is_file()
+}
+#[cfg(not(windows))]
+fn dx12_loadable() -> bool {
+    true
+}
 /// The wgpu instance options, without wgpu's validation of indirect draws
 /// in release builds. That validation (meant for untrusted WebGPU content)
 /// copies every indirect draw through a compute pass before the render pass
@@ -1270,6 +1297,12 @@ fn instance_descriptor(
         descriptor = descriptor.with_display_handle(Box::new(WindowDisplay(window.clone())));
     }
     descriptor.backends = backends.with_env();
+    // Never offer wgpu DirectX 12 where d3d12.dll cannot load (dx12_loadable):
+    // the last guard behind backend_order's, for WGPU_BACKEND and every other
+    // way the backend could be named.
+    if !dx12_loadable() {
+        descriptor.backends.remove(wgpu::Backends::DX12);
+    }
     let dx12 = cfg!(windows) && descriptor.backends.contains(wgpu::Backends::DX12);
     if !cfg!(debug_assertions) && !dx12 {
         descriptor
@@ -1281,6 +1314,10 @@ fn instance_descriptor(
         descriptor
             .flags
             .insert(wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER);
+    }
+    // Again, after with_env, which WGPU_BACKEND can set back.
+    if !dx12_loadable() {
+        descriptor.backends.remove(wgpu::Backends::DX12);
     }
     descriptor
 }
@@ -1302,21 +1339,34 @@ impl wgpu::rwh::HasDisplayHandle for WindowDisplay {
 /// The backends to open a device on, each tried in turn until one gives a
 /// device. `api` is the player's choice (`GraphicsApi::with_env` applied);
 /// `os` is `std::env::consts::OS`; `wgpu_backend`: whether `WGPU_BACKEND` is set,
-/// which picks the backends itself. Auto tries Vulkan, then DirectX 12 on Windows,
-/// then OpenGL (Windows and Linux) for GPUs with neither driver, each when the one
-/// before has no surface, adapter or device. A native crash in the driver can't be
-/// caught in the game; the launcher switches the setting to DirectX 12 after one at
-/// the renderer's start (#746). macOS has Metal only.
-fn backend_order(api: GraphicsApi, os: &str, wgpu_backend: bool) -> Vec<wgpu::Backends> {
+/// which picks the backends itself; `dx12`: whether d3d12.dll can load on this
+/// Windows (`dx12_loadable`) — where it cannot (Windows 7 or 8), DirectX 12 is
+/// skipped entirely, never tried, because asking wgpu for it there ends the
+/// process instead of failing over to OpenGL. Auto tries Vulkan, then DirectX 12
+/// on Windows, then OpenGL (Windows and Linux) for GPUs with neither driver, each
+/// when the one before has no surface, adapter or device. A native crash in the
+/// driver can't be caught in the game; the launcher switches the setting to
+/// DirectX 12 after one at the renderer's start (#746). macOS has Metal only.
+fn backend_order(
+    api: GraphicsApi,
+    os: &str,
+    wgpu_backend: bool,
+    dx12: bool,
+) -> Vec<wgpu::Backends> {
     use wgpu::Backends;
     if os == "macos" || wgpu_backend {
         return vec![Backends::default()];
     }
     let windows = os == "windows";
     match api {
-        GraphicsApi::Auto if windows => vec![Backends::VULKAN, Backends::DX12, Backends::GL],
+        GraphicsApi::Auto if windows && dx12 => {
+            vec![Backends::VULKAN, Backends::DX12, Backends::GL]
+        }
         GraphicsApi::Auto => vec![Backends::VULKAN, Backends::GL],
-        GraphicsApi::Dx12 if windows => vec![Backends::DX12],
+        GraphicsApi::Dx12 if windows && dx12 => vec![Backends::DX12],
+        // DirectX 12 chosen where it cannot load: as Auto without it. Trying it
+        // would end the process; open_device_with says why in the log.
+        GraphicsApi::Dx12 if windows => vec![Backends::VULKAN, Backends::GL],
         GraphicsApi::Vulkan | GraphicsApi::Dx12 => vec![Backends::VULKAN],
         GraphicsApi::OpenGl => vec![Backends::GL],
     }
@@ -1438,10 +1488,18 @@ async fn open_device_with(
     layers: u32,
     allow_cpu: bool,
 ) -> Result<Opened> {
+    let api = api.with_env();
+    if api == GraphicsApi::Dx12 && !dx12_loadable() {
+        log::warn!(
+            "Horizon renderer: DirectX 12 was chosen, but this Windows has no d3d12.dll \
+             (DirectX 12 is part of Windows 10 and newer); trying Vulkan and OpenGL instead"
+        );
+    }
     let order = backend_order(
-        api.with_env(),
+        api,
         std::env::consts::OS,
         std::env::var_os("WGPU_BACKEND").is_some(),
+        dx12_loadable(),
     );
     let mut failures = Vec::new();
     for (attempt, backends) in order.iter().copied().enumerate() {
@@ -8562,7 +8620,7 @@ mod tests {
     fn auto_tries_vulkan_then_directx_12_then_opengl() {
         use super::{GraphicsApi, backend_order};
         use wgpu::Backends;
-        let order = |api, os| backend_order(api, os, false);
+        let order = |api, os| backend_order(api, os, false, true);
         assert_eq!(
             order(GraphicsApi::Auto, "windows"),
             [Backends::VULKAN, Backends::DX12, Backends::GL]
@@ -8570,6 +8628,15 @@ mod tests {
         assert_eq!(order(GraphicsApi::Vulkan, "windows"), [Backends::VULKAN]);
         assert_eq!(order(GraphicsApi::Dx12, "windows"), [Backends::DX12]);
         assert_eq!(order(GraphicsApi::OpenGl, "windows"), [Backends::GL]);
+        // A Windows with no d3d12.dll to load (7 or 8) never tries DirectX 12,
+        // not even when chosen: asking wgpu for it there ends the process
+        // (0xc0000139) instead of failing over to OpenGL.
+        for api in [GraphicsApi::Auto, GraphicsApi::Dx12] {
+            assert_eq!(
+                backend_order(api, "windows", false, false),
+                [Backends::VULKAN, Backends::GL]
+            );
+        }
         assert_eq!(
             order(GraphicsApi::Auto, "linux"),
             [Backends::VULKAN, Backends::GL]
@@ -8578,7 +8645,7 @@ mod tests {
         assert_eq!(order(GraphicsApi::OpenGl, "linux"), [Backends::GL]);
         // WGPU_BACKEND picks the backends itself; macOS has Metal only.
         for api in GraphicsApi::ALL {
-            assert_eq!(backend_order(api, "windows", true), [Backends::default()]);
+            assert_eq!(backend_order(api, "windows", true, true), [Backends::default()]);
             assert_eq!(order(api, "macos"), [Backends::default()]);
         }
     }
