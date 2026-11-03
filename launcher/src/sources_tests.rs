@@ -546,9 +546,9 @@ fn the_not_found_message_says_what_the_chosen_folder_has() {
     let s = Scratch::new("notes-versions");
     s.write("game/versions/1.21.4/1.21.4.jar", b"old");
     s.write("game/versions/26.2/26.2.json", b"{}");
+    let chosen = s.0.join("game");
     let error =
-        resolve_with(&s.0.join("game"), &[], &s.0.join("linked"), &Mojang::new(MANIFEST))
-            .unwrap_err();
+        resolve_with(&chosen, &[], &s.0.join("linked"), &Mojang::new(MANIFEST)).unwrap_err();
     assert!(
         error.contains("The folder you chose has Minecraft 1.21.4, 26.2"),
         "{error}"
@@ -557,9 +557,9 @@ fn the_not_found_message_says_what_the_chosen_folder_has() {
 
     let s = Scratch::new("notes-no-jar");
     s.write("game/versions/26.3/26.3.json", b"{}");
+    let chosen = s.0.join("game");
     let error =
-        resolve_with(&s.0.join("game"), &[], &s.0.join("linked"), &Mojang::new(MANIFEST))
-            .unwrap_err();
+        resolve_with(&chosen, &[], &s.0.join("linked"), &Mojang::new(MANIFEST)).unwrap_err();
     assert!(
         error.contains("versions/26.3 is in the folder you chose, but 26.3.jar is not in it"),
         "{error}"
@@ -568,16 +568,16 @@ fn the_not_found_message_says_what_the_chosen_folder_has() {
     let s = Scratch::new("notes-game-folder");
     s.write("play/saves/New World/level.dat", b"world");
     s.write("play/options.txt", b"");
+    let chosen = s.0.join("play");
     let error =
-        resolve_with(&s.0.join("play"), &[], &s.0.join("linked"), &Mojang::new(MANIFEST))
-            .unwrap_err();
+        resolve_with(&chosen, &[], &s.0.join("linked"), &Mojang::new(MANIFEST)).unwrap_err();
     assert!(error.contains("looks like a game folder"), "{error}");
 
     let s = Scratch::new("notes-program");
     s.write("Minecraft/game/launcher.jar", b"launcher");
+    let chosen = s.0.join("Minecraft/game");
     let error =
-        resolve_with(&s.0.join("Minecraft/game"), &[], &s.0.join("linked"), &Mojang::new(MANIFEST))
-            .unwrap_err();
+        resolve_with(&chosen, &[], &s.0.join("linked"), &Mojang::new(MANIFEST)).unwrap_err();
     assert!(
         error.contains("where the Minecraft Launcher program lives"),
         "{error}"

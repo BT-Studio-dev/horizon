@@ -412,16 +412,15 @@ fn chosen_notes(chosen: &Path, version: &str) -> Vec<String> {
     let mut ids: Vec<String> = Vec::new();
     let mut jar_there = false;
     for base in &bases {
-        jar_there |= base.join(format!("versions/{version}/{version}.jar")).is_file();
-        let Ok(entries) = fs::read_dir(base.join("versions")) else {
-            continue;
-        };
-        ids.extend(
-            entries
-                .flatten()
-                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-                .filter_map(|entry| entry.file_name().into_string().ok()),
-        );
+        let pinned = base.join(format!("versions/{version}/{version}.jar"));
+        jar_there |= pinned.is_file();
+        let versions = fs::read_dir(base.join("versions"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter_map(|entry| entry.file_name().into_string().ok());
+        ids.extend(versions);
     }
     ids.sort();
     ids.dedup();
