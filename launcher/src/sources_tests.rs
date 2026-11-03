@@ -559,12 +559,14 @@ fn a_launcher_profiles_game_dir_is_searched() {
     let game = s.launcher("MinecraftGame", "", "versions/26.3/26.3.jar");
     s.write("MinecraftGame/versions/26.3/26.3.json", MANIFEST);
     let dir = s.0.join(".minecraft");
+    let game_dir = game.display().to_string().replace('\\', "/");
     let profiles = r#"{"profiles": {"26.3": {"gameDir": "GAME_DIR"},
-                                   "elsewhere": {"gameDir": "not here"}}}"#
-        .replace("GAME_DIR", &game.display().to_string().replace('\\', "/"));
+                                   "elsewhere": {"gameDir": "not here"}}}"#;
+    let profiles = profiles.replace("GAME_DIR", &game_dir);
     s.write(".minecraft/launcher_profiles.json", profiles.as_bytes());
-    let got = resolve_with(&dir, &[], &s.0.join("linked"), &Mojang::new(MANIFEST)).unwrap();
-    assert_eq!(got, game);
+    let linked = s.0.join("linked");
+    let resolved = resolve_with(&dir, &[], &linked, &Mojang::new(MANIFEST));
+    assert_eq!(resolved.unwrap(), game);
 }
 
 /// A relative `gameDir` is inside the folder holding the profiles file.
@@ -573,12 +575,11 @@ fn a_relative_profile_game_dir_is_inside_the_folder() {
     let s = Scratch::new("profiles-relative");
     let game = s.launcher("GameData", "", "versions/26.3/26.3.jar");
     s.write("GameData/versions/26.3/26.3.json", MANIFEST);
-    s.write(
-        "launcher_profiles.json",
-        br#"{"profiles": {"26.3": {"gameDir": "GameData"}}}"#,
-    );
-    let got = resolve_with(&s.0, &[], &s.0.join("linked"), &Mojang::new(MANIFEST)).unwrap();
-    assert_eq!(got, game);
+    let profiles = br#"{"profiles": {"26.3": {"gameDir": "GameData"}}}"#;
+    s.write("launcher_profiles.json", profiles);
+    let linked = s.0.join("linked");
+    let resolved = resolve_with(&s.0, &[], &linked, &Mojang::new(MANIFEST));
+    assert_eq!(resolved.unwrap(), game);
 }
 
 /// An install of another release says which one, so the player reads what to do (play 26.3
@@ -588,11 +589,11 @@ fn an_install_of_another_release_names_it() {
     let s = Scratch::new("other-release");
     let dir = s.0.join(".minecraft");
     s.write(".minecraft/versions/1.21.11/1.21.11.jar", b"another release");
-    let error = resolve_with(&dir, &[], &s.0.join("linked"), &Mojang::new(MANIFEST)).unwrap_err();
-    assert!(
-        error.contains("no Minecraft 26.3 client jar (it has 1.21.11)"),
-        "{error}"
-    );
+    let linked = s.0.join("linked");
+    let resolved = resolve_with(&dir, &[], &linked, &Mojang::new(MANIFEST));
+    let error = resolved.unwrap_err();
+    let said = "no Minecraft 26.3 client jar (it has 1.21.11)";
+    assert!(error.contains(said), "{error}");
 }
 
 /// A profile's name holds the version as a whole token: `26.3-0.18.1` is a Fabric profile of
