@@ -588,7 +588,10 @@ fn a_relative_profile_game_dir_is_inside_the_folder() {
 fn an_install_of_another_release_names_it() {
     let s = Scratch::new("other-release");
     let dir = s.0.join(".minecraft");
-    s.write(".minecraft/versions/1.21.11/1.21.11.jar", b"another release");
+    s.write(
+        ".minecraft/versions/1.21.11/1.21.11.jar",
+        b"another release",
+    );
     let linked = s.0.join("linked");
     let resolved = resolve_with(&dir, &[], &linked, &Mojang::new(MANIFEST));
     let error = resolved.unwrap_err();
