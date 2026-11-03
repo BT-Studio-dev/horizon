@@ -1,5 +1,6 @@
 //! Where the player's own Minecraft files are: the folder they chose, the official launcher's,
-//! or another launcher's (Prism Launcher, MultiMC, Modrinth App, ATLauncher, GDLauncher), #434.
+//! or another launcher's (Prism Launcher, MultiMC, Modrinth App, ATLauncher, GDLauncher,
+//! CurseForge App), #434.
 //! horizon-prepare reads the official launcher's layout and pins the version JSON's own sha1, so
 //! files found elsewhere are linked into that layout in the launcher's data folder, with the
 //! pinned version JSON from Mojang when the other launcher keeps its own rewrite of it.
@@ -132,6 +133,12 @@ pub fn known_folders(os: Os, f: &Folders) -> Vec<(&'static str, PathBuf)> {
                 "ATLauncher",
                 flatpak("com.atlauncher.ATLauncher", "data/atlauncher"),
             ),
+            // The CurseForge app's default modding folder is in Documents off Windows; the
+            // game itself is in its `Install` folder (see `find`).
+            (
+                "CurseForge App",
+                f.home.join("Documents/curseforge/minecraft"),
+            ),
         ],
         Os::MacOs => vec![
             (OFFICIAL, f.data.join("minecraft")),
@@ -139,12 +146,17 @@ pub fn known_folders(os: Os, f: &Folders) -> Vec<(&'static str, PathBuf)> {
             ("MultiMC", f.data.join("MultiMC")),
             ("Modrinth App", f.data.join("ModrinthApp")),
             ("ATLauncher", f.data.join("ATLauncher")),
+            (
+                "CurseForge App",
+                f.home.join("Documents/curseforge/minecraft"),
+            ),
         ],
         Os::Windows => vec![
             (OFFICIAL, f.data.join(".minecraft")),
             ("Prism Launcher", f.data.join("PrismLauncher")),
             ("Modrinth App", f.data.join("ModrinthApp")),
             ("ATLauncher", f.data.join("ATLauncher")),
+            ("CurseForge App", f.home.join("curseforge/minecraft")),
         ],
     };
     // Names every system shares: the Modrinth App before its rename, GDLauncher and its
@@ -258,13 +270,28 @@ fn launcher_of(path: &Path) -> Option<&'static str> {
             "ModrinthApp" | "com.modrinth.theseus" => Some("the Modrinth App"),
             "atlauncher" | "ATLauncher" => Some("ATLauncher"),
             "gdlauncher_carbon" | "gdlauncher_next" => Some("GDLauncher"),
+            "curseforge" => Some("the CurseForge App"),
             _ => None,
         })
 }
 
+/// The folders below a launcher folder that can hold its `libraries`: the Modrinth App's
+/// `meta`, GDLauncher's `data` and GDLauncher Next's `datastore`, the CurseForge App's
+/// `Install` (the official launcher's layout, run by the app), a `.minecraft` below the
+/// folder that was picked (a launcher's portable folder, or a copy of an install), and the
+/// `minecraft` and `game` folders launchers and players name a copy of that layout.
+const BASE_SUBDIRS: [&str; 7] = [
+    "meta",
+    "data",
+    "datastore",
+    "Install",
+    ".minecraft",
+    "minecraft",
+    "game",
+];
+
 /// The pinned version in one launcher folder, or what the folder lacks. The folder holding
-/// `libraries` is the folder itself or its `meta` (Modrinth App), `data` (GDLauncher) or
-/// `datastore` (GDLauncher Next).
+/// `libraries` is the folder itself or one of `BASE_SUBDIRS` below it.
 pub fn find(dir: &Path, pins: &Pins) -> Result<Found, String> {
     if !dir.is_dir() {
         return Err("the folder doesn't exist".into());
@@ -273,7 +300,7 @@ pub fn find(dir: &Path, pins: &Pins) -> Result<Found, String> {
     let mut other = None;
     let bases = [dir.to_path_buf()]
         .into_iter()
-        .chain(["meta", "data", "datastore"].map(|sub| dir.join(sub)));
+        .chain(BASE_SUBDIRS.map(|sub| dir.join(sub)));
     for base in bases {
         for jar in client_jars(&base, v) {
             let client = base.join(&jar);
@@ -302,6 +329,150 @@ pub fn find(dir: &Path, pins: &Pins) -> Result<Found, String> {
     })
 }
 
+/// Folders never descended into below the chosen folder: none of them holds a launcher's
+/// base folder, and some (`assets`, `libraries`) hold thousands of folders of their own.
+const SKIP_BELOW: [&str; 10] = [
+    "assets",
+    "libraries",
+    "versions",
+    "saves",
+    "mods",
+    "resourcepacks",
+    "shaderpacks",
+    "logs",
+    "crash-reports",
+    ".git",
+];
+
+/// The pinned version in a folder below the chosen one. Players pick the folder their
+/// Minecraft lives in rather than the exact folder a launcher keeps its `versions` and
+/// `libraries` in — a portable launcher's folder (holding `.minecraft`, or its `game`
+/// folder), a CurseForge modding folder (the game is in `Install` below it), or a copy of
+/// an install nested in another folder — so the chosen folder's own tree is looked in too.
+/// The walk is bounded (four folders down, at most a thousand folders, links not followed),
+/// and only a folder with a client jar at one of the launcher paths is checked against the
+/// pins.
+fn find_below(chosen: &Path, pins: &Pins) -> Option<Found> {
+    if !chosen.is_dir() {
+        return None;
+    }
+    let mut stack: Vec<(PathBuf, usize)> = vec![(chosen.to_path_buf(), 0)];
+    let mut queued = 0;
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > 0
+            && client_jars(&dir, &pins.version)
+                .iter()
+                .any(|jar| dir.join(jar).is_file())
+        {
+            if let Ok(found) = find(&dir, pins) {
+                return Some(found);
+            }
+        }
+        if depth >= 4 {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| SKIP_BELOW.contains(&name))
+            {
+                continue;
+            }
+            queued += 1;
+            if queued > 1000 {
+                return None;
+            }
+            stack.push((entry.path(), depth + 1));
+        }
+    }
+    None
+}
+
+/// What the chosen folder does hold, for the not-found message: the Minecraft versions it
+/// has when they are not the pinned one, a pinned version folder with no jar in it, a game
+/// folder (worlds and settings) picked instead of the folder holding the game, and the
+/// official launcher's program folder (its `game/launcher.jar`) picked instead of its
+/// `.minecraft`. Each turns "not found" into the folder or version to pick instead.
+fn chosen_notes(chosen: &Path, version: &str) -> Vec<String> {
+    let mut notes = Vec::new();
+    if !chosen.is_dir() {
+        return notes;
+    }
+    let bases: Vec<PathBuf> = [chosen.to_path_buf()]
+        .into_iter()
+        .chain(BASE_SUBDIRS.map(|sub| chosen.join(sub)))
+        .collect();
+    let mut ids: Vec<String> = Vec::new();
+    let mut jar_there = false;
+    for base in &bases {
+        jar_there |= base.join(format!("versions/{version}/{version}.jar")).is_file();
+        let Ok(entries) = fs::read_dir(base.join("versions")) else {
+            continue;
+        };
+        ids.extend(
+            entries
+                .flatten()
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                .filter_map(|entry| entry.file_name().into_string().ok()),
+        );
+    }
+    ids.sort();
+    ids.dedup();
+    if ids.iter().any(|id| id == version) && !jar_there {
+        notes.push(format!(
+            "versions/{version} is in the folder you chose, but {version}.jar is not in it — \
+             play {version} once there so the download finishes, then prepare again."
+        ));
+    }
+    let others: Vec<&str> = ids
+        .iter()
+        .map(String::as_str)
+        .filter(|id| *id != version)
+        .collect();
+    if !others.is_empty() {
+        let shown = others[..others.len().min(6)].join(", ");
+        let more = match others.len() {
+            n if n > 6 => format!(" and {} more", n - 6),
+            _ => String::new(),
+        };
+        notes.push(format!(
+            "The folder you chose has Minecraft {shown}{more} — Horizon needs {version} \
+             itself."
+        ));
+    }
+    let program = bases.iter().any(|base| base.join("launcher.jar").is_file())
+        || chosen.join("MinecraftLauncher.exe").is_file()
+        || chosen
+            .parent()
+            .is_some_and(|up| up.join("MinecraftLauncher.exe").is_file());
+    if program {
+        notes.push(
+            "The folder you chose is where the Minecraft Launcher program lives, not where \
+             it keeps the game: it keeps Minecraft in its .minecraft folder (on Windows, \
+             %APPDATA%\\.minecraft). Choose that folder instead."
+                .into(),
+        );
+    } else if (chosen.join("saves").is_dir() || chosen.join("options.txt").is_file())
+        && !chosen.join("versions").is_dir()
+        && !chosen.join("libraries").is_dir()
+    {
+        notes.push(
+            "The folder you chose looks like a game folder (worlds and settings): Horizon \
+             needs the launcher folder that holds versions, libraries and assets instead — \
+             for the official launcher, its .minecraft folder."
+                .into(),
+        );
+    }
+    notes
+}
+
 /// The error when no folder has the pinned version: every folder looked in with what it
 /// lacks, and what the player can do about it (#419, #693). When the chosen folder is inside a
 /// launcher Horizon knows, the advice names it: a Prism or MultiMC instance downloads the game
@@ -310,6 +481,9 @@ pub fn not_found(version: &str, checked: &[(PathBuf, String)], chosen: &Path) ->
     let mut text = format!("Minecraft {version} was not found. Horizon looked in:");
     for (dir, missing) in checked {
         text += &format!("\n  {} ({missing})", dir.display());
+    }
+    for note in chosen_notes(chosen, version) {
+        text += &format!("\n  {note}");
     }
     text += "\nTo fix it:";
     text += &match launcher_of(chosen) {
@@ -321,8 +495,10 @@ pub fn not_found(version: &str, checked: &[(PathBuf, String)], chosen: &Path) ->
         ),
         None => format!(
             "\n  • Play {version} once in the official Minecraft launcher, or in Prism Launcher, \
-             MultiMC, the Modrinth App, ATLauncher or GDLauncher, then prepare again.\n  \
-             • Or choose the folder where your launcher keeps Minecraft {version} (Minecraft \
+             MultiMC, the Modrinth App, ATLauncher, GDLauncher or the CurseForge App, then \
+             prepare again.\n  \
+             • Or choose the folder where your launcher keeps Minecraft {version} — the folder \
+             holding its versions, libraries and assets, or any folder above it (Minecraft \
              folder › Choose… in the launcher, --minecraft on the command line)."
         ),
     };
@@ -358,7 +534,7 @@ pub fn resolve(
     // The chosen folder, the folders above it (an instance's own folder may be chosen), and,
     // when it is inside a Prism or MultiMC instance tree, the launcher root above `instances`
     // that holds their shared `libraries` (#693).
-    let mut dirs: Vec<PathBuf> = chosen.ancestors().take(4).map(Path::to_path_buf).collect();
+    let mut dirs: Vec<PathBuf> = chosen.ancestors().take(6).map(Path::to_path_buf).collect();
     if let Some(root) = instance_root(chosen) {
         if !dirs.contains(&root) {
             dirs.push(root);
@@ -373,6 +549,12 @@ pub fn resolve(
             Err(missing) if dir.as_path() == chosen => checked.push((dir, missing)),
             Err(_) => {}
         }
+    }
+    // Then below the chosen folder: the folder a player picks is the one their Minecraft
+    // lives in, which can sit a folder or two above the base folder a launcher keeps its
+    // `versions` and `libraries` in (a portable launcher's folder, a copy of an install).
+    if found.is_none() {
+        found = find_below(chosen, pins).map(|f| ("the chosen folder", f));
     }
     let same = |a: &Path, b: &Path| a == b || fs::canonicalize(a).ok() == fs::canonicalize(b).ok();
     for (name, dir) in known.iter().filter(|(_, d)| d.is_dir() && !same(d, chosen)) {

@@ -389,7 +389,10 @@ fn the_not_found_message_names_the_launcher_that_was_chosen() {
     fs::create_dir_all(&other).unwrap();
     let error = resolve_with(&other, &[], &s.0.join("linked"), &Mojang::new(MANIFEST)).unwrap_err();
     assert!(
-        error.contains("Prism Launcher, MultiMC, the Modrinth App, ATLauncher or GDLauncher"),
+        error.contains(
+            "Prism Launcher, MultiMC, the Modrinth App, ATLauncher, GDLauncher or the \
+             CurseForge App"
+        ),
         "{error}"
     );
 }
@@ -480,10 +483,106 @@ fn nothing_found_lists_every_folder_and_what_it_lacks() {
         empty.display()
     );
     assert!(error.starts_with(&expected), "{error}");
-    assert!(error.contains("Prism Launcher, MultiMC, the Modrinth App, ATLauncher or GDLauncher"));
+    assert!(error.contains(
+        "Prism Launcher, MultiMC, the Modrinth App, ATLauncher, GDLauncher or the \
+         CurseForge App"
+    ));
     // A launcher that isn't installed isn't listed.
     assert!(!error.contains("atlauncher"));
     assert!(mojang.urls.lock().unwrap().is_empty());
+}
+
+/// The official layout in a `game` folder below the one chosen: a portable launcher's
+/// folder (or a copy of an install) picked one folder too high.
+#[test]
+fn a_game_folder_below_the_chosen_one_is_found() {
+    let s = Scratch::new("below-game");
+    let dir = s.launcher("Minecraft", "game", "versions/26.3/26.3.jar");
+    s.write("Minecraft/game/versions/26.3/26.3.json", MANIFEST);
+    let got = resolve_with(&dir, &[], &s.0.join("linked"), &Mojang::new(MANIFEST)).unwrap();
+    assert_eq!(got, dir.join("game"));
+}
+
+/// A copy of an install nested below the chosen folder, past the named folders below it:
+/// the chosen folder's own tree is looked in.
+#[test]
+fn a_copy_nested_below_the_chosen_folder_is_found() {
+    let s = Scratch::new("below-nested");
+    let dir = s.launcher(
+        "Minecraft",
+        "copies/main/.minecraft",
+        "versions/26.3/26.3.jar",
+    );
+    s.write(
+        "Minecraft/copies/main/.minecraft/versions/26.3/26.3.json",
+        MANIFEST,
+    );
+    let got = resolve_with(&dir, &[], &s.0.join("linked"), &Mojang::new(MANIFEST)).unwrap();
+    assert_eq!(got, dir.join("copies/main/.minecraft"));
+}
+
+/// The CurseForge App runs the official launcher in its modding folder's `Install`; that
+/// folder, and an instance folder beside it, are both found.
+#[test]
+fn the_curseforge_app_install_folder_is_found() {
+    let s = Scratch::new("curseforge");
+    let dir = s.launcher("curseforge/minecraft", "Install", "versions/26.3/26.3.jar");
+    s.write(
+        "curseforge/minecraft/Install/versions/26.3/26.3.json",
+        MANIFEST,
+    );
+    let got = resolve_with(&dir, &[], &s.0.join("linked"), &Mojang::new(MANIFEST)).unwrap();
+    assert_eq!(got, dir.join("Install"));
+    let instance = dir.join("Instances/Modded");
+    fs::create_dir_all(&instance).unwrap();
+    let got = resolve_with(&instance, &[], &s.0.join("linked"), &Mojang::new(MANIFEST)).unwrap();
+    assert_eq!(got, dir.join("Install"));
+}
+
+/// The not-found message says what the chosen folder does have: other versions, the pinned
+/// version's folder without its jar, a game folder, or the launcher's program folder.
+#[test]
+fn the_not_found_message_says_what_the_chosen_folder_has() {
+    let s = Scratch::new("notes-versions");
+    s.write("game/versions/1.21.4/1.21.4.jar", b"old");
+    s.write("game/versions/26.2/26.2.json", b"{}");
+    let error =
+        resolve_with(&s.0.join("game"), &[], &s.0.join("linked"), &Mojang::new(MANIFEST))
+            .unwrap_err();
+    assert!(
+        error.contains("The folder you chose has Minecraft 1.21.4, 26.2"),
+        "{error}"
+    );
+    assert!(error.contains("Horizon needs 26.3 itself"), "{error}");
+
+    let s = Scratch::new("notes-no-jar");
+    s.write("game/versions/26.3/26.3.json", b"{}");
+    let error =
+        resolve_with(&s.0.join("game"), &[], &s.0.join("linked"), &Mojang::new(MANIFEST))
+            .unwrap_err();
+    assert!(
+        error.contains("versions/26.3 is in the folder you chose, but 26.3.jar is not in it"),
+        "{error}"
+    );
+
+    let s = Scratch::new("notes-game-folder");
+    s.write("play/saves/New World/level.dat", b"world");
+    s.write("play/options.txt", b"");
+    let error =
+        resolve_with(&s.0.join("play"), &[], &s.0.join("linked"), &Mojang::new(MANIFEST))
+            .unwrap_err();
+    assert!(error.contains("looks like a game folder"), "{error}");
+
+    let s = Scratch::new("notes-program");
+    s.write("Minecraft/game/launcher.jar", b"launcher");
+    let error =
+        resolve_with(&s.0.join("Minecraft/game"), &[], &s.0.join("linked"), &Mojang::new(MANIFEST))
+            .unwrap_err();
+    assert!(
+        error.contains("where the Minecraft Launcher program lives"),
+        "{error}"
+    );
+    assert!(error.contains("%APPDATA%\\.minecraft"), "{error}");
 }
 
 #[test]
@@ -521,6 +620,7 @@ fn each_system_has_its_launcher_folders() {
         "ATLauncher: /home/r/.local/share/atlauncher",
         "GDLauncher: /home/r/.local/share/gdlauncher_carbon",
         "GDLauncher: /home/r/.config/gdlauncher_next",
+        "CurseForge App: /home/r/Documents/curseforge/minecraft",
     ] {
         assert!(got.iter().any(|g| g == expected), "{expected} in {got:#?}");
     }
@@ -538,6 +638,7 @@ fn each_system_has_its_launcher_folders() {
     assert!(
         got.contains(&"Prism Launcher: /Users/r/Library/Application Support/PrismLauncher".into())
     );
+    assert!(got.contains(&"CurseForge App: /Users/r/Documents/curseforge/minecraft".into()));
     let windows = Folders {
         home: "C:/Users/r".into(),
         data: "C:/Users/r/AppData/Roaming".into(),
@@ -549,4 +650,5 @@ fn each_system_has_its_launcher_folders() {
         "the official launcher: C:/Users/r/AppData/Roaming/.minecraft"
     );
     assert!(got.contains(&"ATLauncher: C:/Users/r/AppData/Roaming/ATLauncher".into()));
+    assert!(got.contains(&"CurseForge App: C:/Users/r/curseforge/minecraft".into()));
 }

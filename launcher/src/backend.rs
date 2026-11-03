@@ -1616,6 +1616,15 @@ fn download_for(
             "\n  • No signed-in account owns Minecraft: Java Edition, so Horizon can't download it."
                 .into(),
         ),
+        // A build without a Microsoft client ID (HORIZON_MSA_CLIENT_ID) cannot sign in at
+        // all, so sending the player to sign in is a dead end: their own install is the
+        // only source of the game files.
+        Err(_) if account::client_id().is_none() => Err(format!(
+            "\n  • This build cannot sign in to Microsoft, so it cannot download {v} for you: \
+             put Minecraft {v} on this PC with a launcher that runs on it, or copy a Minecraft \
+             {v} install — its versions, libraries and assets folders — from another PC into \
+             one folder, choose that folder, then prepare again."
+        )),
         Err(_) => Err(format!(
             "\n  • Or sign in with the Microsoft account that owns Minecraft: Horizon then \
              downloads {v} from Mojang itself."

@@ -710,7 +710,8 @@ enum Cmd {
     /// Prepare a version's resources from your own Minecraft install, or from Mojang
     Prepare {
         /// The game folder of the official launcher, Prism Launcher, MultiMC, the Modrinth App,
-        /// ATLauncher or GDLauncher (default: the launcher's, then every launcher's default)
+        /// ATLauncher, GDLauncher or the CurseForge App (default: the launcher's, then every
+        /// launcher's default)
         #[arg(long, conflicts_with = "download")]
         minecraft: Option<PathBuf>,
         /// Download Minecraft from Mojang for the signed-in account that owns it, instead of

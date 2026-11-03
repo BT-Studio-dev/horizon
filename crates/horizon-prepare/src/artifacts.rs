@@ -251,9 +251,11 @@ fn launcher_folders() -> Vec<(&'static str, PathBuf)> {
 }
 
 /// The pinned version's files in the chosen folder (`--minecraft-dir`, HORIZON_MINECRAFT_DIR),
-/// or the launcher above it when an instance folder (`instances/<name>`) is chosen; with no
-/// folder chosen, in the first launcher folder that has them. When none does, the official
-/// layout of the first folder is returned, for the errors to name, with the folders looked in.
+/// in the folder below it a launcher keeps them in (the CurseForge app's `Install`, the
+/// Modrinth App's `meta`, a portable launcher's `.minecraft` or `game`), or the launcher
+/// above it when an instance folder (`instances/<name>`) is chosen; with no folder chosen,
+/// in the first launcher folder that has them. When none does, the official layout of the
+/// first folder is returned, for the errors to name, with the folders looked in.
 pub fn game_files(chosen: Option<&Path>, version: &str) -> GameFiles {
     let chosen = chosen
         .filter(|d| !d.as_os_str().is_empty())
@@ -268,7 +270,14 @@ pub fn game_files(chosen: Option<&Path>, version: &str) -> GameFiles {
                 .find(|a| a.file_name().is_some_and(|n| n == "instances"))
                 .and_then(Path::parent)
                 .map(Path::to_path_buf);
-            let mut folders = vec![("the folder chosen", dir)];
+            let mut folders = vec![("the folder chosen", dir.clone())];
+            folders.extend(
+                ["Install", ".minecraft", "minecraft", "meta", "game"]
+                    .into_iter()
+                    .map(|sub| dir.join(sub))
+                    .filter(|below| below.is_dir())
+                    .map(|below| ("in the folder chosen", below)),
+            );
             folders.extend(launcher.map(|dir| ("the launcher above it", dir)));
             folders
         }
@@ -1490,6 +1499,34 @@ mod tests {
         assert!(prepare(&atlauncher)
             .unwrap_err()
             .contains("may have rewritten it"));
+    }
+
+    /// The folder chosen can sit above the one holding the game: a portable launcher's
+    /// folder (the game in `.minecraft` or `game` below it), or the CurseForge app's
+    /// modding folder (the game in `Install` below it).
+    #[test]
+    fn a_folder_above_the_game_files_is_found() {
+        let root = std::env::temp_dir().join(format!("horizon-above-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for (chosen, below) in [
+            ("portable", ".minecraft"),
+            ("portable-game", "game"),
+            ("curseforge/minecraft", "Install"),
+        ] {
+            let base = root.join(chosen).join(below);
+            fs::create_dir_all(base.join("versions/9.9")).unwrap();
+            fs::write(base.join("versions/9.9/9.9.json"), b"{}").unwrap();
+            fs::write(base.join("versions/9.9/9.9.jar"), b"client").unwrap();
+            let files = game_files(Some(&root.join(chosen)), "9.9");
+            assert_eq!(files.folder, base, "{chosen}");
+            assert_eq!(files.client, base.join("versions/9.9/9.9.jar"), "{chosen}");
+            assert_eq!(
+                files.manifest,
+                base.join("versions/9.9/9.9.json"),
+                "{chosen}"
+            );
+        }
+        fs::remove_dir_all(&root).unwrap();
     }
 
     /// A launcher with a layout of its own names each file (`--version-json`, `--client-jar`,
