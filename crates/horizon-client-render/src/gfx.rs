@@ -1358,18 +1358,23 @@ fn backend_order(
         return vec![Backends::default()];
     }
     let windows = os == "windows";
-    match api {
-        GraphicsApi::Auto if windows && dx12 => {
-            vec![Backends::VULKAN, Backends::DX12, Backends::GL]
-        }
+    let mut order = match api {
+        GraphicsApi::Auto if windows => vec![Backends::VULKAN, Backends::DX12, Backends::GL],
         GraphicsApi::Auto => vec![Backends::VULKAN, Backends::GL],
-        GraphicsApi::Dx12 if windows && dx12 => vec![Backends::DX12],
-        // DirectX 12 chosen where it cannot load: as Auto without it. Trying it
-        // would end the process; open_device_with says why in the log.
-        GraphicsApi::Dx12 if windows => vec![Backends::VULKAN, Backends::GL],
+        GraphicsApi::Dx12 if windows => vec![Backends::DX12],
         GraphicsApi::Vulkan | GraphicsApi::Dx12 => vec![Backends::VULKAN],
         GraphicsApi::OpenGl => vec![Backends::GL],
+    };
+    // No d3d12.dll to load: DirectX 12 comes out of whatever order was picked
+    // (trying it would end the process; open_device_with says why in the log),
+    // and a lone DirectX 12 choice falls back to Vulkan then OpenGL.
+    if !dx12 {
+        order.retain(|backends| *backends != Backends::DX12);
+        if order.is_empty() {
+            order = vec![Backends::VULKAN, Backends::GL];
+        }
     }
+    order
 }
 fn backends_name(backends: wgpu::Backends) -> &'static str {
     match backends {
