@@ -205,21 +205,41 @@ fn client_jars(base: &Path, version: &str) -> Vec<String> {
     jars
 }
 
-/// The client jars the Modrinth App keeps for a mod loader's profile: `versions/<v>-<loader>/`,
-/// the vanilla jar under the loader's name, when only a Fabric or Quilt profile of the version
-/// was ever played (#1783). The jar is checked against the pin like the others.
+/// The client jars mod loaders and third-party launchers keep for a profile of `version`
+/// (`versions/<v>-<loader>/`, `versions/fabric-loader-…-<v>/`, `versions/Fabric <v>/`), when
+/// only a modded profile of the version was ever played (#1783). The jar is checked against the
+/// pin like the others.
+#[rustfmt::skip]
 fn loader_jars(base: &Path, version: &str) -> Vec<String> {
-    let prefix = format!("{version}-");
     let mut jars: Vec<String> = fs::read_dir(base.join("versions"))
         .into_iter()
         .flatten()
         .flatten()
         .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| name.starts_with(&prefix))
+        .filter(|name| mentions_version_token(name, version))
         .map(|name| format!("versions/{name}/{name}.jar"))
         .collect();
     jars.sort();
     jars
+}
+
+#[rustfmt::skip]
+fn mentions_version_token(name: &str, version: &str) -> bool {
+    if name == version || version.is_empty() {
+        return false;
+    }
+    name.match_indices(version).any(|(start, _)| {
+        let end = start + version.len();
+        let before_ok = name[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '.');
+        let after_ok = name[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '.');
+        before_ok && after_ok
+    })
 }
 
 pub(crate) fn sha1_file(path: &Path) -> Option<String> {
@@ -263,17 +283,20 @@ fn launcher_of(path: &Path) -> Option<&'static str> {
 }
 
 /// The pinned version in one launcher folder, or what the folder lacks. The folder holding
-/// `libraries` is the folder itself or its `meta` (Modrinth App), `data` (GDLauncher) or
-/// `datastore` (GDLauncher Next).
+/// `libraries` is the folder itself or its `meta` (Modrinth App), `data` (GDLauncher),
+/// `datastore` (GDLauncher Next), `.minecraft`/`minecraft` (portable launcher roots) or
+/// `Install` (CurseForge).
+#[rustfmt::skip]
 pub fn find(dir: &Path, pins: &Pins) -> Result<Found, String> {
     if !dir.is_dir() {
         return Err("the folder doesn't exist".into());
     }
     let v = &pins.version;
     let mut other = None;
-    let bases = [dir.to_path_buf()]
-        .into_iter()
-        .chain(["meta", "data", "datastore"].map(|sub| dir.join(sub)));
+    let bases = [dir.to_path_buf()].into_iter().chain(
+        ["meta", "data", "datastore", ".minecraft", "minecraft", "Install"]
+            .map(|sub| dir.join(sub)),
+    );
     for base in bases {
         for jar in client_jars(&base, v) {
             let client = base.join(&jar);
@@ -298,8 +321,59 @@ pub fn find(dir: &Path, pins: &Pins) -> Result<Found, String> {
             "{} is not the {v} release Horizon was made for",
             jar.strip_prefix(dir).unwrap_or(&jar).display()
         ),
-        None => format!("no Minecraft {v} client jar"),
+        None => {
+            let present = versions_present(dir);
+            if present.is_empty() {
+                format!("no Minecraft {v} client jar")
+            } else {
+                format!(
+                    "no Minecraft {v} client jar (it has {})",
+                    readable_list(&present)
+                )
+            }
+        }
     })
+}
+
+/// The versions a launcher folder has: its `versions/<name>/` folders holding a jar, wherever the
+/// folder keeps them (itself, `meta`, `.minecraft`, `minecraft`, `Install`). An error that says
+/// what the folder does have tells a player whose install is another release what to do.
+#[rustfmt::skip]
+fn versions_present(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let bases = [dir.to_path_buf()]
+        .into_iter()
+        .chain([".minecraft", "minecraft", "meta", "Install"].map(|sub| dir.join(sub)));
+    for base in bases {
+        let entries = match fs::read_dir(base.join("versions")) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = match entry.file_name().into_string() {
+                Ok(name) => name,
+                Err(_) => continue,
+            };
+            let jar = path.join(format!("{name}.jar"));
+            if path.is_dir() && jar.is_file() && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names.sort();
+    names
+}
+
+/// A few names, then how many more: an error line stays readable.
+#[rustfmt::skip]
+fn readable_list(names: &[String]) -> String {
+    const SHOWN: usize = 4;
+    let mut list = names.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(", ");
+    if names.len() > SHOWN {
+        list += &format!(" and {} more", names.len() - SHOWN);
+    }
+    list
 }
 
 /// The error when no folder has the pinned version: every folder looked in with what it
@@ -341,10 +415,49 @@ pub enum Resolved {
     NotFound(Vec<(PathBuf, String)>),
 }
 
+/// The game folders the official launcher's profiles name in `launcher_profiles.json` (Prism
+/// Launcher and MultiMC write one too): a player whose 26.3 profile keeps Minecraft on another
+/// drive (F:\Minecraft) plays there, and `%APPDATA%\.minecraft` alone would miss it. A relative
+/// `gameDir` is relative to the folder holding the file.
+#[rustfmt::skip]
+fn profile_folders(dir: &Path) -> Vec<PathBuf> {
+    let text = match fs::read_to_string(dir.join("launcher_profiles.json")) {
+        Ok(text) => text,
+        Err(_) => return Vec::new(),
+    };
+    let json: Value = match serde_json::from_str(&text) {
+        Ok(json) => json,
+        Err(_) => return Vec::new(),
+    };
+    let profiles = match json.get("profiles").and_then(Value::as_object) {
+        Some(profiles) => profiles,
+        None => return Vec::new(),
+    };
+    let mut folders: Vec<PathBuf> = Vec::new();
+    for profile in profiles.values() {
+        let game = profile.get("gameDir").and_then(Value::as_str).unwrap_or_default();
+        if game.trim().is_empty() {
+            continue;
+        }
+        let path = Path::new(game);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            dir.join(path)
+        };
+        if path.is_dir() && !folders.contains(&path) {
+            folders.push(path);
+        }
+    }
+    folders
+}
+
 /// A Minecraft folder in the official launcher's layout holding the pinned version: the
 /// chosen folder when it is one, else the files found in the chosen folder, a folder above it
 /// (a launcher's instance folder may be chosen, and the launcher root above a Prism or MultiMC
-/// `instances` folder is looked in too) or any launcher's default folder, linked into `linked`.
+/// `instances` folder is looked in too), a game folder one of its launcher profiles names, or any
+/// launcher's default folder, linked into `linked`.
+#[rustfmt::skip]
 pub fn resolve(
     chosen: &Path,
     pins: &Pins,
@@ -354,24 +467,42 @@ pub fn resolve(
     log: &dyn Fn(String),
 ) -> Result<Resolved, String> {
     let mut checked = Vec::new();
-    let mut found = None;
+    let mut found: Option<(String, Found)> = None;
     // The chosen folder, the folders above it (an instance's own folder may be chosen), and,
     // when it is inside a Prism or MultiMC instance tree, the launcher root above `instances`
-    // that holds their shared `libraries` (#693).
+    // that holds their shared `libraries` (#693). The game folders its launcher profiles name
+    // (a profile that keeps Minecraft on another drive) are searched after them.
     let mut dirs: Vec<PathBuf> = chosen.ancestors().take(4).map(Path::to_path_buf).collect();
     if let Some(root) = instance_root(chosen) {
         if !dirs.contains(&root) {
             dirs.push(root);
         }
     }
+    let mut profiles: Vec<PathBuf> = Vec::new();
+    for dir in &dirs {
+        for profile in profile_folders(dir) {
+            if !dirs.contains(&profile) && !profiles.contains(&profile) {
+                profiles.push(profile);
+            }
+        }
+    }
     for dir in dirs {
         match find(&dir, pins) {
             Ok(f) => {
-                found = Some(("the chosen folder", f));
+                found = Some(("the chosen folder".to_string(), f));
                 break;
             }
             Err(missing) if dir.as_path() == chosen => checked.push((dir, missing)),
             Err(_) => {}
+        }
+    }
+    for dir in profiles {
+        if found.is_some() {
+            break;
+        }
+        match find(&dir, pins) {
+            Ok(f) => found = Some(("your launcher's profile".to_string(), f)),
+            Err(missing) => checked.push((dir, format!("a launcher profile: {missing}"))),
         }
     }
     let same = |a: &Path, b: &Path| a == b || fs::canonicalize(a).ok() == fs::canonicalize(b).ok();
@@ -379,9 +510,23 @@ pub fn resolve(
         if found.is_some() {
             break;
         }
-        match find(dir, pins) {
-            Ok(f) => found = Some((name, f)),
-            Err(missing) => checked.push((dir.clone(), format!("{name}: {missing}"))),
+        let mut candidates = vec![(name.to_string(), dir.clone())];
+        candidates.extend(
+            profile_folders(dir)
+                .into_iter()
+                .map(|profile| (format!("{name}'s profile"), profile)),
+        );
+        for (name, dir) in candidates {
+            if same(&dir, chosen) {
+                continue;
+            }
+            match find(&dir, pins) {
+                Ok(f) => {
+                    found = Some((name, f));
+                    break;
+                }
+                Err(missing) => checked.push((dir, format!("{name}: {missing}"))),
+            }
         }
     }
     let Some((name, found)) = found else {

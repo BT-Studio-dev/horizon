@@ -550,3 +550,63 @@ fn each_system_has_its_launcher_folders() {
     );
     assert!(got.contains(&"ATLauncher: C:/Users/r/AppData/Roaming/ATLauncher".into()));
 }
+
+/// A player whose official launcher profile keeps Minecraft on another drive (F:\Minecraft):
+/// `%APPDATA%\.minecraft` holds only the profiles file, and the game is where `gameDir` says.
+#[test]
+fn a_launcher_profiles_game_dir_is_searched() {
+    let s = Scratch::new("profiles");
+    let game = s.launcher("MinecraftGame", "", "versions/26.3/26.3.jar");
+    s.write("MinecraftGame/versions/26.3/26.3.json", MANIFEST);
+    let dir = s.0.join(".minecraft");
+    let profiles = r#"{"profiles": {"26.3": {"gameDir": "GAME_DIR"},
+                                   "elsewhere": {"gameDir": "not here"}}}"#
+        .replace("GAME_DIR", &game.display().to_string().replace('\\', "/"));
+    s.write(".minecraft/launcher_profiles.json", profiles.as_bytes());
+    let got = resolve_with(&dir, &[], &s.0.join("linked"), &Mojang::new(MANIFEST)).unwrap();
+    assert_eq!(got, game);
+}
+
+/// A relative `gameDir` is inside the folder holding the profiles file.
+#[test]
+fn a_relative_profile_game_dir_is_inside_the_folder() {
+    let s = Scratch::new("profiles-relative");
+    let game = s.launcher("GameData", "", "versions/26.3/26.3.jar");
+    s.write("GameData/versions/26.3/26.3.json", MANIFEST);
+    s.write(
+        "launcher_profiles.json",
+        br#"{"profiles": {"26.3": {"gameDir": "GameData"}}}"#,
+    );
+    let got = resolve_with(&s.0, &[], &s.0.join("linked"), &Mojang::new(MANIFEST)).unwrap();
+    assert_eq!(got, game);
+}
+
+/// An install of another release says which one, so the player reads what to do (play 26.3
+/// once) instead of guessing why Horizon found nothing.
+#[test]
+fn an_install_of_another_release_names_it() {
+    let s = Scratch::new("other-release");
+    let dir = s.0.join(".minecraft");
+    s.write(".minecraft/versions/1.21.11/1.21.11.jar", b"another release");
+    let error = resolve_with(&dir, &[], &s.0.join("linked"), &Mojang::new(MANIFEST)).unwrap_err();
+    assert!(
+        error.contains("no Minecraft 26.3 client jar (it has 1.21.11)"),
+        "{error}"
+    );
+}
+
+/// A profile's name holds the version as a whole token: `26.3-0.18.1` is a Fabric profile of
+/// 26.3, `26.3.1-0.18.1` is one of another release.
+#[test]
+fn loader_profile_names_match_the_version_as_a_word() {
+    for (name, wanted) in [
+        ("26.3-0.18.1", true),
+        ("Fabric 26.3", true),
+        ("fabric-loader-0.18.1-26.3", true),
+        ("26.3.1-0.18.1", false),
+        ("126.3-0.18.1", false),
+        ("26.3", false),
+    ] {
+        assert_eq!(mentions_version_token(name, "26.3"), wanted, "{name}");
+    }
+}

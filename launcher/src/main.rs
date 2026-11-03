@@ -4771,6 +4771,9 @@ fn main() {
     }
     perf::process_started();
     backend::exe_path();
+    // A computer short of memory prepares one lane at a time, before any thread reads the
+    // environment a preparation inherits.
+    backend::limit_prepare_jobs_for_low_memory();
     #[cfg(windows)]
     backend::remove_replaced_binaries();
     backend::cleanup_launcher_updates();

@@ -1727,6 +1727,27 @@ fn assets_folder(
     }
 }
 
+/// How many lanes a preparation runs (`crates/horizon-prepare/src/pool.rs`); set to `1`, the
+/// exporters' JVMs run one after another instead of side by side.
+pub const PREPARE_JOBS_ENV: &str = "HORIZON_PREPARE_JOBS";
+
+/// Memory below which a preparation runs one lane at a time: a fresh one peaks at about 1.06 GB
+/// across its JVMs (docs/launcher-preparation.md), which a computer this small cannot spare
+/// beside the window. One lane keeps a single JVM at a time, about 480 MB.
+const LOW_MEMORY_MB: u32 = 3072;
+
+/// Runs preparations one lane at a time on a computer short of memory (a 2 GB Windows 7 machine).
+/// Called once at startup, before the window's threads exist, because it sets what this process
+/// and every preparer it starts inherit from its environment; a value the player set stands.
+#[rustfmt::skip]
+pub fn limit_prepare_jobs_for_low_memory() {
+    let set = std::env::var_os(PREPARE_JOBS_ENV).is_some();
+    if set || crate::launch::total_memory_mb() >= LOW_MEMORY_MB {
+        return;
+    }
+    std::env::set_var(PREPARE_JOBS_ENV, "1");
+}
+
 /// Where the preparation takes Minecraft's files from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MinecraftFrom {
@@ -1777,6 +1798,7 @@ pub fn set_prepare_step(step: PrepareStep) {
 /// Java (and Python, for versions before horizon-prepare). Also returns the Minecraft folder
 /// to prepare from: `minecraft`, or the files another launcher keeps, linked into the official
 /// launcher's layout (sources.rs).
+#[rustfmt::skip]
 pub fn preparer(
     tag: &str,
     minecraft: &Path,
@@ -1847,7 +1869,18 @@ pub fn preparer(
     let major = read_json(&dir.join("research-lock.json"))
         .and_then(|lock| lock["minecraft"]["java_major"].as_i64())
         .unwrap_or(25);
+    let chosen_parent = chosen.parent().map(Path::to_path_buf);
     let mut games = vec![chosen, minecraft.clone(), data_dir().join("minecraft")];
+    games.extend(chosen_parent);
+    if cfg!(windows) {
+        for env_key in ["ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"] {
+            if let Some(base) = std::env::var_os(env_key).filter(|v| !v.is_empty()) {
+                let base = PathBuf::from(base);
+                games.push(base.join("Minecraft Launcher"));
+                games.push(base.join("Minecraft"));
+            }
+        }
+    }
     games.extend(
         sources::Folders::current()
             .map(|f| sources::known_folders(sources::Os::current(), &f))
