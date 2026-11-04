@@ -357,11 +357,11 @@ pub fn prepare_legacy_graphics_environment() -> Option<&'static str> {
 /// x64, and a Core 2 Duo (the Legacy floor) has no POPCNT — the game's very
 /// first allocations would end in 0xc000001d. Processors that old have two
 /// cores; they do not miss the per-thread heaps.
-#[cfg(Horizon_legacy_build)]
-pub use std::alloc::System as Allocator;
-/// The game's global allocator: mimalloc (see the Legacy note above).
 #[cfg(not(Horizon_legacy_build))]
 pub use mimalloc::MiMalloc as Allocator;
+/// The Legacy build's global allocator: the system heap (see above).
+#[cfg(Horizon_legacy_build)]
+pub use std::alloc::System as Allocator;
 
 /// `mi_option_purge_delay` in mimalloc.h (index 15 in v2 and v3); the bindings
 /// don't name it.
