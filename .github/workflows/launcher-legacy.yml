@@ -25,6 +25,10 @@ on:
         description: Optional launcher version override (defaults to launcher/Cargo.toml)
         type: string
         default: ''
+      publish_release:
+        description: Publish the verified Legacy bundle as launcher@<version> (requires version)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -151,3 +155,60 @@ jobs:
             launcher/out/SHA256SUMS
           if-no-files-found: error
           retention-days: 14
+
+  publish-legacy-release:
+    name: publish windows-7-x64 Legacy release
+    needs: build-legacy
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Validate the release version
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
+            echo "::error::publish_release requires a semantic version such as 0.2.40"
+            exit 1
+          }
+      - uses: actions/download-artifact@v4
+        with:
+          name: horizon-Launcher-Legacy-windows-7-x64
+          path: release-assets
+      - name: Verify the packaged checksums
+        run: |
+          cd release-assets
+          sha256sum -c SHA256SUMS
+          ls -lh
+      - name: Publish the Legacy release
+        run: |
+          tag="launcher@$VERSION"
+          title="Horizon launcher $VERSION — Windows 7 x64 Legacy"
+          cat > release-notes.md <<'EOF'
+          Windows 7 SP1 64-bit Legacy build for SSE4.1-era PCs, including the Intel Core 2 Duo E8400.
+
+          Download `horizon-launcher-windows-x64-legacy.zip`, extract it, keep `horizon-client.exe` beside `horizon-launcher-legacy.exe`, and run `horizon-launcher-legacy.exe`.
+
+          This build uses the baseline x86-64 instruction set, avoids the bundled mimalloc POPCNT path in the game client, caps Mesa/Gallium to the processor's supported instructions, and preflights OpenGL/WGL in an isolated child process so an old Intel WGL driver fails as a controlled graphics error instead of taking down the game. Intel GMA 3100 still has no native OpenGL support for this renderer; a compatible Windows 7 Mesa llvmpipe `opengl32.dll` beside `horizon-client.exe` may provide slow software rendering.
+          EOF
+          printf '\nBuilt from %s in %s.\n' "$GITHUB_SHA" "$GH_REPO" >> release-notes.md
+          assets=(
+            release-assets/horizon-launcher-windows-x64-legacy.zip
+            release-assets/horizon-launcher-legacy.exe
+            release-assets/horizon-launcher.exe
+            release-assets/horizon-client.exe
+            release-assets/SHA256SUMS
+          )
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --clobber
+            gh release edit "$tag" --title "$title" --notes-file release-notes.md --latest=false
+          else
+            gh release create "$tag" --target "$GITHUB_SHA" --title "$title" \
+              --notes-file release-notes.md --latest=false "${assets[@]}"
+          fi
+          gh release view "$tag" --json tagName,name,url,assets \
+            --jq '{tagName,name,url,assets:[.assets[]|{name,size,url}]}'
