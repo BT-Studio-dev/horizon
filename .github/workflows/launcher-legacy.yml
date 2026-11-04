@@ -3,6 +3,8 @@ name: horizon-Launcher Legacy
 # (`HORIZON_LAUNCHER_LEGACY=1`), statically linking the C runtime (`+crt-static`),
 # embedding the Windows 7 runtime API/COM/DirectWrite/DXGI/WARP shims, and verifying
 # that the resulting PE32+ executable imports zero Windows 8+/10+ DLLs or entry points.
+# Changing .github/launcher-legacy-release.txt to a launcher version publishes that
+# verified bundle as launcher@<version>; a manual run can do the same.
 
 on:
   push:
@@ -19,6 +21,7 @@ on:
       - 'tools/check_imports.py'
       - 'tools/check_isa.py'
       - '.github/workflows/launcher-legacy.yml'
+      - '.github/launcher-legacy-release.txt'
   workflow_dispatch:
     inputs:
       version:
@@ -42,8 +45,41 @@ env:
   HORIZON_TELEMETRY_URL: "off"
 
 jobs:
+  release-request:
+    name: decide Legacy release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.decide.outputs.version }}
+      publish: ${{ steps.decide.outputs.publish }}
+    env:
+      INPUT_VERSION: ${{ inputs.version || '' }}
+      INPUT_PUBLISH: ${{ inputs.publish_release || false }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: decide
+        run: |
+          version="$INPUT_VERSION"
+          publish=false
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$INPUT_PUBLISH" == true ]]; then
+            publish=true
+          fi
+          release_file=.github/launcher-legacy-release.txt
+          if [[ "$GITHUB_EVENT_NAME" == push ]] && git rev-parse HEAD^ >/dev/null 2>&1 \
+              && git diff --name-only HEAD^ HEAD | grep -Fxq "$release_file"; then
+            version=$(tr -d '[:space:]' < "$release_file")
+            publish=true
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "Legacy release: publish=$publish version=$version" >> "$GITHUB_STEP_SUMMARY"
+
   build-legacy:
     name: build windows-7-x64 (Legacy)
+    needs: release-request
     runs-on: windows-latest
     timeout-minutes: 50
     env:
@@ -61,7 +97,7 @@ jobs:
       HORIZON_LAUNCHER_LEGACY: "1"
       HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
       HORIZON_CURSEFORGE_API_KEY: ${{ secrets.HORIZON_CURSEFORGE_API_KEY }}
-      HORIZON_LAUNCHER_VERSION: ${{ inputs.version || '' }}
+      HORIZON_LAUNCHER_VERSION: ${{ needs.release-request.outputs.version }}
     defaults:
       run:
         working-directory: launcher
@@ -158,8 +194,8 @@ jobs:
 
   publish-legacy-release:
     name: publish windows-7-x64 Legacy release
-    needs: build-legacy
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+    needs: [release-request, build-legacy]
+    if: needs.release-request.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -167,7 +203,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      VERSION: ${{ inputs.version }}
+      VERSION: ${{ needs.release-request.outputs.version }}
     steps:
       - name: Validate the release version
         run: |
