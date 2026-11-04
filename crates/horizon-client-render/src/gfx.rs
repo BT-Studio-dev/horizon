@@ -11,7 +11,12 @@ use crate::{
     sprites::SpriteAnimation,
 };
 use glam::{DVec3, Mat4, Vec3, Vec4};
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
+};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
@@ -1271,6 +1276,266 @@ fn dx12_loadable() -> bool {
 fn dx12_loadable() -> bool {
     true
 }
+
+/// The hidden argument that makes `horizon-client` load OpenGL and report,
+/// then exit: the game starts itself with it before trusting WGL on a legacy
+/// Windows/CPU combination.
+pub const OPENGL_PROBE_ARG: &str = "--horizon-opengl-probe";
+const OPENGL_PROBE_CHILD_ENV: &str = "HORIZON_OPENGL_PROBE_CHILD";
+const OPENGL_PROBE_OK: &str = "HORIZON_OPENGL_OK";
+const OPENGL_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Get the process ready to load graphics drivers: no Windows crash dialog
+/// over a native fault, and Mesa/Gallium kept within an old processor's
+/// instructions. Logged here, once, because the library call has no logger
+/// of its own; `main` also calls the same preparation before anything else.
+fn prepare_graphics_environment() {
+    static PREPARED: OnceLock<()> = OnceLock::new();
+    let _ = PREPARED.get_or_init(
+        || match horizon_threads::prepare_legacy_graphics_environment() {
+            Some(caps) => log::info!(
+                "Horizon renderer: limiting Mesa/Gallium to {caps} on this processor; \
+                 player-set GALLIUM_OVERRIDE_CPU_CAPS and LP_NATIVE_VECTOR_WIDTH are kept"
+            ),
+            None => horizon_threads::suppress_native_crash_dialogs(),
+        },
+    );
+}
+
+/// Whether this run asks for the OpenGL probe process always, never, or
+/// only where WGL is a known startup risk (`HORIZON_OPENGL_PROBE`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GlProbeMode {
+    Auto,
+    Force,
+    Skip,
+}
+
+fn gl_probe_mode(value: Option<&str>) -> GlProbeMode {
+    let Some(value) = value else {
+        return GlProbeMode::Auto;
+    };
+    match value.trim().to_ascii_lowercase().as_str() {
+        "0" | "false" | "off" | "no" | "skip" => GlProbeMode::Skip,
+        "1" | "true" | "on" | "yes" | "force" => GlProbeMode::Force,
+        _ => GlProbeMode::Auto,
+    }
+}
+
+/// The probe's whole decision, for the tests. `legacy_cpu` is a processor
+/// Mesa needs its caps ceiling on; `dx12` doubles as "Windows 10 or newer"
+/// (there is no older Windows with it); `child` stops recursion, and
+/// `probe_program` keeps other binaries that embed the renderer (tests,
+/// examples) from re-running themselves with an argument they don't take.
+fn gl_probe_needed(
+    mode: GlProbeMode,
+    windows: bool,
+    legacy_cpu: bool,
+    dx12: bool,
+    child: bool,
+    probe_program: bool,
+) -> bool {
+    if child || !probe_program {
+        return false;
+    }
+    match mode {
+        GlProbeMode::Skip => false,
+        GlProbeMode::Force => windows,
+        GlProbeMode::Auto => windows && (legacy_cpu || !dx12),
+    }
+}
+
+/// Whether `path` is the game program that understands the probe argument.
+fn is_opengl_probe_program(path: &std::path::Path) -> bool {
+    path.file_stem()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("horizon-client"))
+}
+
+fn opengl_probe_needed() -> bool {
+    let mode = gl_probe_mode(std::env::var("HORIZON_OPENGL_PROBE").ok().as_deref());
+    let program = std::env::current_exe()
+        .ok()
+        .is_some_and(|path| is_opengl_probe_program(&path));
+    gl_probe_needed(
+        mode,
+        cfg!(windows),
+        horizon_threads::legacy_gallium_cpu_caps().is_some(),
+        dx12_loadable(),
+        std::env::var_os(OPENGL_PROBE_CHILD_ENV).is_some(),
+        program,
+    )
+}
+
+/// The last few non-empty lines of a probe's output, on one line for a log.
+fn output_tail(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(3)..].join(" | ")
+}
+
+/// Run this same program as an OpenGL probe and wait for its verdict.
+/// WGL has to load the display driver's `opengl32.dll` (or a Mesa drop-in)
+/// and make a context before wgpu can give an ordinary error back: on
+/// Intel GMA-class Windows 7 drivers, and in Mesa builds made for newer
+/// processors, that first load can fault natively (0xc000001d on a Core 2
+/// Duo when AVX/SSE4.2 code runs) inside whichever process tries it. In a
+/// child process the fault is a failed probe exit status this process can
+/// report and fall back from; Windows' own crash dialog is suppressed in
+/// both (`horizon_threads::prepare_legacy_graphics_environment`, inherited
+/// error mode, and the child's first own step in `main`).
+fn run_opengl_probe_child() -> std::result::Result<String, String> {
+    use std::io::Read as _;
+    let _ = horizon_threads::prepare_legacy_graphics_environment();
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("could not find this program to probe OpenGL with it: {e}"))?;
+    let mut command = std::process::Command::new(&exe);
+    command
+        .arg(OPENGL_PROBE_ARG)
+        .env(OPENGL_PROBE_CHILD_ENV, "1")
+        .env("WGPU_BACKEND", "gl")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for (name, value) in horizon_threads::legacy_gallium_env() {
+        command.env(name, value);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("could not start {} to probe OpenGL: {e}", exe.display()))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or("the OpenGL probe process has no output")?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or("the OpenGL probe process has no error output")?;
+    let stdout_thread = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.by_ref().take(64 * 1024).read_to_end(&mut bytes);
+        String::from_utf8_lossy(&bytes).into_owned()
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.by_ref().take(64 * 1024).read_to_end(&mut bytes);
+        String::from_utf8_lossy(&bytes).into_owned()
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < OPENGL_PROBE_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_thread.join();
+                let stderr = stderr_thread.join().unwrap_or_default();
+                return Err(format!(
+                    "the OpenGL probe did not answer within {} seconds{}",
+                    OPENGL_PROBE_TIMEOUT.as_secs(),
+                    match output_tail(&stderr).as_str() {
+                        "" => String::new(),
+                        tail => format!(" ({tail})"),
+                    }
+                ));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                return Err(format!("could not wait for the OpenGL probe process: {e}"));
+            }
+        }
+    };
+    let stdout = stdout_thread.join().unwrap_or_default();
+    let stderr = stderr_thread.join().unwrap_or_default();
+    if !status.success() {
+        let status = match status.code() {
+            Some(code) => format!("exit status {code} (0x{:08x})", code as u32),
+            None => "terminated by a signal".to_string(),
+        };
+        let detail = match (output_tail(&stderr), output_tail(&stdout)) {
+            (tail, _) if !tail.is_empty() => tail,
+            (_, tail) if !tail.is_empty() => tail,
+            _ => "no output; the graphics driver likely faulted while loading".to_string(),
+        };
+        return Err(format!(
+            "the OpenGL probe process failed ({status}): {detail}"
+        ));
+    }
+    stdout
+        .lines()
+        .rev()
+        .find(|line| line.starts_with(OPENGL_PROBE_OK))
+        .map(|line| line.to_string())
+        .ok_or_else(|| {
+            format!(
+                "the OpenGL probe process gave no verdict ({})",
+                output_tail(&stderr)
+            )
+        })
+}
+
+/// The probe's verdict for this process, run at most once and shared by
+/// every renderer start after it.
+fn ensure_opengl_probe_passed() -> std::result::Result<(), String> {
+    if !opengl_probe_needed() {
+        return Ok(());
+    }
+    static PROBE: OnceLock<std::result::Result<String, String>> = OnceLock::new();
+    match PROBE.get_or_init(run_opengl_probe_child) {
+        Ok(report) => {
+            log::debug!("Horizon renderer: OpenGL preflight passed: {report}");
+            Ok(())
+        }
+        Err(error) => Err(error.clone()),
+    }
+}
+
+/// Load OpenGL, make its context and a device, and name the adapter, for
+/// the probe process (`OPENGL_PROBE_ARG` in `main`). Deliberately just an
+/// instance, an adapter and an empty device: everything a broken WGL
+/// driver or an AVX-built Mesa trips over happens by then, and the real
+/// start asks for this process's own surface afterwards only on success.
+pub fn probe_opengl() -> std::result::Result<String, String> {
+    let _ = horizon_threads::prepare_legacy_graphics_environment();
+    let instance = crate::crash::contain(|| {
+        wgpu::Instance::new(instance_descriptor(wgpu::Backends::GL, None, false))
+    })
+    .map_err(|error| format!("OpenGL initialization failed in the graphics driver: {error}"))?;
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::LowPower,
+        compatible_surface: None,
+        force_fallback_adapter: true,
+        ..Default::default()
+    }))
+    .map_err(|error| format!("OpenGL gave no adapter: {error}"))?;
+    let info = adapter.get_info();
+    if info.backend != wgpu::Backend::Gl {
+        return Err(format!(
+            "the OpenGL probe got a {:?} adapter, not OpenGL",
+            info.backend
+        ));
+    }
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("Horizon OpenGL probe device"),
+        ..Default::default()
+    }))
+    .map_err(|error| format!("OpenGL gave no device: {error}"))?;
+    Ok(format!(
+        "{OPENGL_PROBE_OK} {} ({:?}, {:?}), driver {} {}",
+        info.name, info.backend, info.device_type, info.driver, info.driver_info
+    ))
+}
 /// The wgpu instance options, without wgpu's validation of indirect draws
 /// in release builds. That validation (meant for untrusted WebGPU content)
 /// copies every indirect draw through a compute pass before the render pass
@@ -1493,6 +1758,7 @@ async fn open_device_with(
     layers: u32,
     allow_cpu: bool,
 ) -> Result<Opened> {
+    prepare_graphics_environment();
     let api = api.with_env();
     if api == GraphicsApi::Dx12 && !dx12_loadable() {
         log::warn!(
@@ -1573,17 +1839,45 @@ async fn open_backend(
     allow_cpu: bool,
 ) -> std::result::Result<Opened, NoDevice> {
     let name = backends_name(backends);
-    let instance = wgpu::Instance::new(instance_descriptor(
-        backends,
-        Some(window),
-        allow_nonconformant,
-    ));
+    // On a legacy Windows/CPU combination, OpenGL gets its first load in the
+    // probe process, not here: a WGL or Mesa fault there is an ordinary
+    // backend failure this start can fall back from (see
+    // run_opengl_probe_child), instead of the end of this process.
+    if backends.with_env().contains(wgpu::Backends::GL)
+        && let Err(error) = ensure_opengl_probe_passed()
+    {
+        return Err(NoDevice::Failed(format!(
+            "OpenGL preflight: {error}; OpenGL was not loaded in this process"
+        )));
+    }
+    // Instance and surface creation call straight into the display driver
+    // (WGL context creation included): a driver that panics its way out of
+    // them is a backend that gave no device, not the end of the game. A
+    // native fault in them cannot be unwound, which is what the probe and
+    // the process error mode above are for.
+    let instance = match crate::crash::contain(|| {
+        wgpu::Instance::new(instance_descriptor(
+            backends,
+            Some(window),
+            allow_nonconformant,
+        ))
+    }) {
+        Ok(instance) => instance,
+        Err(error) => {
+            return Err(NoDevice::Failed(format!("{name} initialization: {error}")));
+        }
+    };
     let surface = if offscreen {
         None
     } else {
-        match instance.create_surface(window.clone()) {
-            Ok(surface) => Some(surface),
-            Err(e) => return Err(NoDevice::Failed(format!("{name} surface: {e}"))),
+        match crate::crash::contain(|| instance.create_surface(window.clone())) {
+            Ok(Ok(surface)) => Some(surface),
+            Ok(Err(e)) => return Err(NoDevice::Failed(format!("{name} surface: {e}"))),
+            Err(error) => {
+                return Err(NoDevice::Failed(format!(
+                    "{name} surface creation: {error}"
+                )));
+            }
         }
     };
     let adapter = match instance
@@ -8656,6 +8950,95 @@ mod tests {
             );
             assert_eq!(order(api, "macos"), [Backends::default()]);
         }
+    }
+    /// The OpenGL probe process runs only where loading WGL in this process
+    /// is a startup risk: legacy CPUs (a Mesa build or JIT past SSE4.1), or
+    /// pre-Windows-10 drivers — and never recursively or in other programs.
+    #[test]
+    fn opengl_probe_runs_only_for_legacy_windows() {
+        use super::{GlProbeMode, gl_probe_mode, gl_probe_needed, is_opengl_probe_program};
+        assert_eq!(gl_probe_mode(None), GlProbeMode::Auto);
+        assert_eq!(gl_probe_mode(Some(" off ")), GlProbeMode::Skip);
+        assert_eq!(gl_probe_mode(Some("FORCE")), GlProbeMode::Force);
+        assert_eq!(gl_probe_mode(Some("anything-else")), GlProbeMode::Auto);
+        // Core 2 Duo on Windows 10, and any processor on Windows 7/8.
+        assert!(gl_probe_needed(
+            GlProbeMode::Auto,
+            true,
+            true,
+            true,
+            false,
+            true
+        ));
+        assert!(gl_probe_needed(
+            GlProbeMode::Auto,
+            true,
+            false,
+            false,
+            false,
+            true
+        ));
+        // A modern processor on Windows 10+ loads OpenGL in-process as before.
+        assert!(!gl_probe_needed(
+            GlProbeMode::Auto,
+            true,
+            false,
+            true,
+            false,
+            true
+        ));
+        // Forced on Windows; never off it, never when skipped, never in the
+        // probe child itself or a program that doesn't take the argument.
+        assert!(gl_probe_needed(
+            GlProbeMode::Force,
+            true,
+            false,
+            true,
+            false,
+            true
+        ));
+        assert!(!gl_probe_needed(
+            GlProbeMode::Force,
+            false,
+            true,
+            false,
+            false,
+            true
+        ));
+        assert!(!gl_probe_needed(
+            GlProbeMode::Skip,
+            true,
+            true,
+            false,
+            false,
+            true
+        ));
+        assert!(!gl_probe_needed(
+            GlProbeMode::Auto,
+            true,
+            true,
+            false,
+            true,
+            true
+        ));
+        assert!(!gl_probe_needed(
+            GlProbeMode::Auto,
+            true,
+            true,
+            false,
+            false,
+            false
+        ));
+        assert!(is_opengl_probe_program(std::path::Path::new(
+            "C:/Games/Horizon/horizon-client.exe"
+        )));
+        assert!(!is_opengl_probe_program(std::path::Path::new(
+            "C:/Games/Horizon/horizon-launcher-legacy.exe"
+        )));
+        assert_eq!(
+            super::output_tail("one\n\ntwo\nthree\nfour\n"),
+            "two | three | four"
+        );
     }
     /// The second try at a backend shows the adapters wgpu hides for reporting
     /// no Vulkan conformance version (Mesa's hasvk, which drives Ivy Bridge and

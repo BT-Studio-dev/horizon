@@ -133,7 +133,8 @@ jobs:
             cache_key: windows
             legacy: '1'
             # Legacy Windows 7 SP1 64-bit build: static CRT + Win7 runtime shims + DirectComposition off by default.
-            rustflags: -C target-feature=+crt-static
+            # Generic x86-64 codegen as in launcher-legacy.yml: no SSE4.2/POPCNT/AVX for Core 2 Duo-class CPUs.
+            rustflags: -C target-feature=+crt-static -C target-cpu=generic
     runs-on: ${{ matrix.mac && (vars.MAC_RUNNER || (github.repository == 'horizon-rust/horizon' && 'ludovics-mac-mini' || 'macos-latest')) || matrix.os }}
     # Notarizing the app and then the .dmg can take a few minutes each.
     timeout-minutes: ${{ matrix.mac && 60 || 40 }}

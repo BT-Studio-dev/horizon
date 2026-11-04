@@ -17,6 +17,7 @@ on:
       - 'Cargo.lock'
       - 'packaging/icons/**'
       - 'tools/check_imports.py'
+      - 'tools/check_isa.py'
       - '.github/workflows/launcher-legacy.yml'
   workflow_dispatch:
     inputs:
@@ -42,7 +43,14 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 40
     env:
-      RUSTFLAGS: -C target-feature=+crt-static
+      # x86-64 baseline codegen (SSE2/SSE3, no SSE4.2/POPCNT/AVX) for both
+      # rustc and the cc-built C (mimalloc, ring): Core 2 Duo-class CPUs
+      # (SSE4.1 max) run these binaries, and anything newer in ordinary
+      # code is a 0xc000001d illegal-instruction crash there. Pinned
+      # explicitly so a future toolchain default cannot raise it.
+      RUSTFLAGS: -C target-feature=+crt-static -C target-cpu=generic
+      CFLAGS: /arch:SSE2
+      CXXFLAGS: /arch:SSE2
       HORIZON_LAUNCHER_LEGACY: "1"
       HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
       HORIZON_CURSEFORGE_API_KEY: ${{ secrets.HORIZON_CURSEFORGE_API_KEY }}
@@ -98,6 +106,10 @@ jobs:
             while IFS= read -r l; do [[ -n "$l" ]] && echo "::error::$l"; done < "$RUNNER_TEMP/imp.log"
             exit 1
           }
+      - name: Verify legacy CPU instruction ceiling (Core 2 Duo / SSE4.1 era)
+        run: |
+          python -m pip install --quiet "capstone>=5,<6"
+          python ../tools/check_isa.py target/release/horizon-launcher.exe ../target/release/horizon-client.exe
       - name: Smoke test CLI
         env:
           HORIZON_LAUNCHER_NO_SELF_UPDATE: '1'

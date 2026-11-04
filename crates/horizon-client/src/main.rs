@@ -13,10 +13,29 @@ static ALLOCATOR: horizon_threads::Allocator = horizon_threads::Allocator;
 static MOD_API_LEVEL: [u8; 27] = horizon_mods::api_level::MARK;
 
 fn main() {
+    // Before any graphics DLL can load: no Windows crash dialog over a
+    // driver fault, and Mesa/Gallium capped to a legacy processor's
+    // instructions (a Core 2 Duo gets SSE4.1, never SSE4.2/POPCNT/AVX).
+    let _ = horizon_threads::prepare_legacy_graphics_environment();
     horizon_threads::configure_allocator();
     std::hint::black_box(&MOD_API_LEVEL);
-    horizon_client::telemetry::mark_start();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // The renderer's OpenGL preflight runs this same program once, alone,
+    // so a WGL driver that faults while loading (Intel GMA on Windows 7,
+    // a Mesa build past this processor) ends this process with a verdict
+    // the game reads, not the game itself mid-start. Nothing else starts:
+    // no log file, telemetry, account or resource lookup.
+    if args.len() == 1 && args[0] == horizon_client::gfx::OPENGL_PROBE_ARG {
+        match horizon_client::gfx::probe_opengl() {
+            Ok(report) => println!("{report}"),
+            Err(error) => {
+                eprintln!("Horizon OpenGL probe: {error}");
+                std::process::exit(70);
+            }
+        }
+        return;
+    }
+    horizon_client::telemetry::mark_start();
     let game_args = args.iter().take_while(|a| *a != "--dedicated");
     let help = game_args
         .clone()

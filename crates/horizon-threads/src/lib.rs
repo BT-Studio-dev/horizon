@@ -202,6 +202,151 @@ pub fn catch_stop_signals() {
 #[cfg(not(any(target_vendor = "apple", target_os = "linux", target_os = "android")))]
 pub fn catch_stop_signals() {}
 
+/// Keep Windows from putting its own crash or missing-file dialog over a
+/// native failure (notably a graphics-driver fault while WGL loads): the
+/// failure still ends the process, but with its exit status for the launcher
+/// and log to report, not a Windows Error Reporting box to dismiss first.
+/// Every error-mode flag the process already had is kept; child processes
+/// inherit the result, so a graphics probe process stays dialog-free too.
+/// Nothing on other systems, which put up no such dialog.
+pub fn suppress_native_crash_dialogs() {
+    suppress_native_crash_dialogs_impl();
+}
+
+#[cfg(windows)]
+fn suppress_native_crash_dialogs_impl() {
+    win7::init();
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        GetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX,
+        SetErrorMode,
+    };
+    let wanted = SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX;
+    // SAFETY: both calls only read/set this process's own error mode; no pointers.
+    unsafe {
+        let previous = GetErrorMode();
+        let desired = previous | wanted;
+        if desired != previous {
+            SetErrorMode(desired);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn suppress_native_crash_dialogs_impl() {}
+
+/// The x86 features Gallium's CPU ceiling turns on, for `gallium_cap_for`.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64", test))]
+#[derive(Clone, Copy, Default)]
+struct X86Features {
+    sse: bool,
+    sse2: bool,
+    sse3: bool,
+    ssse3: bool,
+    sse4_1: bool,
+    sse4_2: bool,
+    popcnt: bool,
+    avx: bool,
+}
+
+/// The `GALLIUM_OVERRIDE_CPU_CAPS` ceiling for these features: `None` when
+/// the CPU has the whole x86-64-v2 set plus AVX (Mesa may use what it finds),
+/// else the highest SSE level present.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64", test))]
+fn gallium_cap_for(features: X86Features) -> Option<&'static str> {
+    if features.sse4_2 && features.popcnt && features.avx {
+        return None;
+    }
+    Some(if features.sse4_1 {
+        "sse4.1"
+    } else if features.ssse3 {
+        "ssse3"
+    } else if features.sse3 {
+        "sse3"
+    } else if features.sse2 {
+        "sse2"
+    } else if features.sse {
+        "sse"
+    } else {
+        "nosse"
+    })
+}
+
+/// The Mesa/Gallium CPU ceiling this processor needs to stay off instructions
+/// it cannot execute, or `None` when it has SSE4.2, POPCNT and AVX (or is not
+/// x86). A Core 2 Duo (SSE4.1, no POPCNT, no AVX) gets `sse4.1`: without the
+/// ceiling, a Mesa build or its llvmpipe JIT that finds AVX-width code paths
+/// ends the process with 0xc000001d (illegal instruction) instead of
+/// rendering slowly.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub fn legacy_gallium_cpu_caps() -> Option<&'static str> {
+    gallium_cap_for(X86Features {
+        sse: is_x86_feature_detected!("sse"),
+        sse2: is_x86_feature_detected!("sse2"),
+        sse3: is_x86_feature_detected!("sse3"),
+        ssse3: is_x86_feature_detected!("ssse3"),
+        sse4_1: is_x86_feature_detected!("sse4.1"),
+        sse4_2: is_x86_feature_detected!("sse4.2"),
+        popcnt: is_x86_feature_detected!("popcnt"),
+        avx: is_x86_feature_detected!("avx"),
+    })
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+pub fn legacy_gallium_cpu_caps() -> Option<&'static str> {
+    None
+}
+
+/// Every default the legacy-CPU graphics environment sets, before the
+/// not-already-set filter `legacy_gallium_env` applies.
+fn gallium_env_defaults(caps: &'static str) -> Vec<(&'static str, &'static str)> {
+    let mut env = vec![
+        ("GALLIUM_OVERRIDE_CPU_CAPS", caps),
+        // llvmpipe may still use AVX encodings for 128-bit vectors when its
+        // own detection allows them; the cap above is the authority, this
+        // keeps the vector width itself in SSE territory regardless.
+        ("LP_NATIVE_VECTOR_WIDTH", "128"),
+    ];
+    if caps == "sse2" {
+        // The pre-override spelling of the same cap, for older Mesa builds.
+        env.push(("LP_FORCE_SSE2", "1"));
+    }
+    env
+}
+
+/// The environment defaults that keep a bundled or drop-in Mesa off SSE4.2,
+/// POPCNT and AVX code on a pre-x86-64-v2/AVX processor, limited to the
+/// variables the player has not set themselves. Empty on a processor that
+/// needs no ceiling.
+pub fn legacy_gallium_env() -> Vec<(&'static str, &'static str)> {
+    let Some(caps) = legacy_gallium_cpu_caps() else {
+        return Vec::new();
+    };
+    gallium_env_defaults(caps)
+        .into_iter()
+        .filter(|(name, _)| std::env::var_os(name).is_none())
+        .collect()
+}
+
+/// At process start, before any graphics library loads (and before worker
+/// threads start): suppress Windows' own crash dialogs, and put the
+/// `legacy_gallium_env` defaults in the environment so a Mesa `opengl32.dll`
+/// loaded later — by this process or a probe child, which inherits them —
+/// stays within this processor's instructions. Returns the caps ceiling
+/// applied, for the log. Later calls only repeat the dialog suppression.
+pub fn prepare_legacy_graphics_environment() -> Option<&'static str> {
+    suppress_native_crash_dialogs();
+    static CAPS: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+    *CAPS.get_or_init(|| {
+        let caps = legacy_gallium_cpu_caps()?;
+        for (name, value) in legacy_gallium_env() {
+            // SAFETY: documented to be called at process start, before the
+            // game's worker threads; the names and values are 'static ASCII.
+            unsafe { std::env::set_var(name, value) };
+        }
+        Some(caps)
+    })
+}
+
 /// The game's global allocator (`#[global_allocator]` in its `main.rs`).
 /// World generation, meshing and the tick allocate and free small blocks on
 /// every worker at once; the system heaps serialise them (Windows' heap was
@@ -468,6 +613,76 @@ mod tests {
         }
         super::configure_allocator();
         assert_eq!(get(), 0);
+    }
+
+    /// A Core 2 Duo (SSE4.1, no POPCNT, no AVX) is capped at sse4.1; only the
+    /// whole x86-64-v2 set plus AVX needs no ceiling.
+    #[test]
+    fn gallium_caps_stop_below_sse4_2_and_avx() {
+        use super::{X86Features, gallium_cap_for};
+        let penryn = X86Features {
+            sse: true,
+            sse2: true,
+            sse3: true,
+            ssse3: true,
+            sse4_1: true,
+            ..Default::default()
+        };
+        assert_eq!(gallium_cap_for(penryn), Some("sse4.1"));
+        // SSE4.2 without POPCNT, or AVX missing, still needs the ceiling.
+        assert_eq!(
+            gallium_cap_for(X86Features {
+                sse4_1: true,
+                sse4_2: true,
+                avx: true,
+                ..penryn
+            }),
+            Some("sse4.1")
+        );
+        assert_eq!(
+            gallium_cap_for(X86Features {
+                sse4_2: true,
+                popcnt: true,
+                avx: true,
+                ..penryn
+            }),
+            None
+        );
+        assert_eq!(
+            gallium_cap_for(X86Features {
+                sse2: true,
+                ..Default::default()
+            }),
+            Some("sse2")
+        );
+    }
+
+    /// The defaults pin llvmpipe to the cap and 128-bit vectors, with the
+    /// older force-SSE2 spelling only at the SSE2 cap.
+    #[test]
+    fn gallium_env_defaults_cap_cpu_and_vector_width() {
+        assert_eq!(
+            super::gallium_env_defaults("sse4.1"),
+            [
+                ("GALLIUM_OVERRIDE_CPU_CAPS", "sse4.1"),
+                ("LP_NATIVE_VECTOR_WIDTH", "128"),
+            ]
+        );
+        assert_eq!(
+            super::gallium_env_defaults("sse2"),
+            [
+                ("GALLIUM_OVERRIDE_CPU_CAPS", "sse2"),
+                ("LP_NATIVE_VECTOR_WIDTH", "128"),
+                ("LP_FORCE_SSE2", "1"),
+            ]
+        );
+    }
+
+    /// Dialog suppression is safe to ask for more than once, on every system.
+    #[test]
+    fn native_crash_dialog_suppression_is_idempotent() {
+        super::suppress_native_crash_dialogs();
+        super::suppress_native_crash_dialogs();
     }
 }
 
