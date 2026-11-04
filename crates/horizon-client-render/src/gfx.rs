@@ -1295,7 +1295,7 @@ fn prepare_graphics_environment() {
         || match horizon_threads::prepare_legacy_graphics_environment() {
             Some(caps) => log::info!(
                 "Horizon renderer: limiting Mesa/Gallium to {caps} on this processor; \
-                 player-set GALLIUM_OVERRIDE_CPU_CAPS and LP_NATIVE_VECTOR_WIDTH are kept"
+                 player-set Gallium environment variables are kept"
             ),
             None => horizon_threads::suppress_native_crash_dialogs(),
         },

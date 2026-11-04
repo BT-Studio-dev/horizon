@@ -313,18 +313,47 @@ fn gallium_env_defaults(caps: &'static str) -> Vec<(&'static str, &'static str)>
     env
 }
 
+/// Whether `dir` holds the Mesa WGL loader and Gallium driver the Legacy
+/// package puts beside the game.
+#[cfg(any(windows, test))]
+fn mesa_wgl_present_in(dir: &std::path::Path) -> bool {
+    dir.join("opengl32.dll").is_file() && dir.join("libgallium_wgl.dll").is_file()
+}
+
+/// Whether this program has that bundled Mesa beside it. Windows loader
+/// search finds its `opengl32.dll` before the system one, so its presence is
+/// what asks for Mesa rather than a native WGL driver.
+#[cfg(windows)]
+fn bundled_mesa_wgl_present() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(mesa_wgl_present_in))
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn bundled_mesa_wgl_present() -> bool {
+    false
+}
+
 /// The environment defaults that keep a bundled or drop-in Mesa off SSE4.2,
 /// POPCNT and AVX code on a pre-x86-64-v2/AVX processor, limited to the
 /// variables the player has not set themselves. Empty on a processor that
-/// needs no ceiling.
+/// needs no ceiling. The bundled Mesa also asks for its llvmpipe software
+/// driver: without the choice, its default can spend the one WGL adapter on
+/// GLonD3D12 and report none on Windows 7.
 pub fn legacy_gallium_env() -> Vec<(&'static str, &'static str)> {
     let Some(caps) = legacy_gallium_cpu_caps() else {
         return Vec::new();
     };
-    gallium_env_defaults(caps)
+    let mut env: Vec<_> = gallium_env_defaults(caps)
         .into_iter()
         .filter(|(name, _)| std::env::var_os(name).is_none())
-        .collect()
+        .collect();
+    if bundled_mesa_wgl_present() && std::env::var_os("GALLIUM_DRIVER").is_none() {
+        env.push(("GALLIUM_DRIVER", "llvmpipe"));
+    }
+    env
 }
 
 /// At process start, before any graphics library loads (and before worker
@@ -691,6 +720,21 @@ mod tests {
                 ("LP_FORCE_SSE2", "1"),
             ]
         );
+    }
+
+    /// The bundled software driver is the loader and Gallium DLL together;
+    /// either alone is a leftover the native driver should not answer for.
+    #[test]
+    fn mesa_wgl_needs_both_bundled_dlls() {
+        let dir = std::env::temp_dir().join(format!("horizon-mesa-wgl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!super::mesa_wgl_present_in(&dir));
+        std::fs::write(dir.join("opengl32.dll"), []).unwrap();
+        assert!(!super::mesa_wgl_present_in(&dir));
+        std::fs::write(dir.join("libgallium_wgl.dll"), []).unwrap();
+        assert!(super::mesa_wgl_present_in(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Dialog suppression is safe to ask for more than once, on every system.

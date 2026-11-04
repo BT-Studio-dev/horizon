@@ -5,6 +5,8 @@ Windows .exe: every DLL in the import and delay-import tables must ship with
 Windows (no VCRUNTIME140.dll, vulkan-1.dll, ...): Vulkan and the like are
 loaded at run time, so a missing driver is an error message, not a dialog.
 `--win7`: also fail on DLLs or imported symbols added after Windows 7 SP1.
+`--app-local`: imports between the DLLs named on the command line are part of
+the checked bundle; every other import still has to be a Windows system DLL.
 Linux ELF: the loader must be the standard one (not a /nix/store path) and the
 needed libraries the ones every desktop distribution has. `--server`: a server
 build, which may not need ALSA or udev either (minimal server images lack them).
@@ -39,10 +41,12 @@ WINDOWS_POST_WIN7_SYMBOLS = {
     "ActivateAudioInterfaceAsync",
     "AdjustWindowRectExForDpi",
     "CoIncrementMTAUsage",
+    "CopyFile2",
     "CreateDXGIFactory2",
     "CreateDirect3D11DeviceFromDXGIDevice",
     "CreateDirect3D11SurfaceFromDXGISurface",
     "CreateDispatcherQueueController",
+    "CreateFile2",
     "DCompositionCreateDevice",
     "DXGIGetDebugInterface1",
     "EnableNonClientDpiScaling",
@@ -212,13 +216,16 @@ def elf_needs(data):
     return interpreter, needed, runpath
 
 
-def check(path, server=False, win7=False):
+def check(path, server=False, win7=False, app_local=False, local_dlls=None):
     data = Path(path).read_bytes()
     problems = []
+    local = {name.lower() for name in local_dlls or ()}
     if data[:2] == b"MZ":
         tables = pe_import_tables(data)
         names = [dll for dll, _ in tables]
         for dll, symbols in tables:
+            if app_local and dll.lower() in local:
+                continue
             detail = f"{dll} ({', '.join(symbols)})" if symbols else dll
             if not windows_allowed(dll):
                 problems.append(f"imports {detail}, which Windows does not ship")
@@ -251,8 +258,14 @@ def main():
                         help="a server build: not even ALSA or udev (the game's sound and controllers)")
     parser.add_argument("--win7", action="store_true",
                         help="require Windows 7 SP1 x64 compatibility (no Windows 8+/10+ DLLs or entry points)")
+    parser.add_argument("--app-local", action="store_true",
+                        help="allow imports between the DLLs named on the command line")
     args = parser.parse_args()
-    ok = all([check(path, args.server, args.win7) for path in args.binaries])
+    local_dlls = {Path(path).name for path in args.binaries if Path(path).suffix.lower() == ".dll"}
+    ok = all([
+        check(path, args.server, args.win7, args.app_local, local_dlls)
+        for path in args.binaries
+    ])
     sys.exit(0 if ok else 1)
 
 

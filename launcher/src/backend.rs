@@ -159,6 +159,13 @@ pub(crate) const CLIENT: &str = if cfg!(windows) {
     "horizon-client"
 };
 
+/// The Mesa WGL loader and Gallium driver the Legacy zip puts beside the
+/// bundled client for llvmpipe software OpenGL.
+#[cfg(windows)]
+const LEGACY_MESA_DLLS: [&str; 2] = ["opengl32.dll", "libgallium_wgl.dll"];
+#[cfg(not(windows))]
+const LEGACY_MESA_DLLS: [&str; 0] = [];
+
 /// The agent `url` is fetched with: the launcher's own user agent, through the player's proxy when
 /// one is set (`proxy`).
 fn agent(url: &str) -> ureq::Agent {
@@ -3176,8 +3183,16 @@ fn update_bundled_client(unpacked: &Path, launcher_exe: &Path) {
     if !IS_LEGACY_BUILD {
         return;
     }
-    if let (Some(client), Some(dir)) = (find_file(unpacked, CLIENT), launcher_exe.parent()) {
+    let Some(dir) = launcher_exe.parent() else {
+        return;
+    };
+    if let Some(client) = find_file(unpacked, CLIENT) {
         let _ = replace_binary(&client, &dir.join(CLIENT));
+    }
+    for dll in LEGACY_MESA_DLLS {
+        if let Some(source) = find_file(unpacked, dll) {
+            let _ = replace_binary(&source, &dir.join(dll));
+        }
     }
 }
 

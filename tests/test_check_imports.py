@@ -94,6 +94,14 @@ class CheckImportsTests(unittest.TestCase):
             self.assertTrue(check_imports.check(exe, win7=False))
             self.assertFalse(check_imports.check(exe, win7=True))
 
+    def test_win7_mode_rejects_createfile2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dll = self.write_pe(tmp, "libgallium_wgl.dll", [
+                ("kernel32.dll", ["CreateFile2"]),
+            ])
+            self.assertTrue(check_imports.check(dll, win7=False))
+            self.assertFalse(check_imports.check(dll, win7=True))
+
     def test_win7_mode_rejects_post_win7_dlls_and_apisets(self):
         bad_dlls = [
             ("dcomp.dll", ["DCompositionCreateDevice"]),
@@ -117,6 +125,27 @@ class CheckImportsTests(unittest.TestCase):
             ])
             self.assertFalse(check_imports.check(exe, win7=False))
             self.assertFalse(check_imports.check(exe, win7=True))
+
+    def test_app_local_mode_allows_a_checked_dll_dependency(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            loader = self.write_pe(tmp, "opengl32.dll", [
+                ("kernel32.dll", ["LoadLibraryW"]),
+                ("libgallium_wgl.dll", ["wglCreateContext"]),
+            ])
+            self.assertFalse(check_imports.check(loader, win7=True))
+            self.assertTrue(check_imports.check(
+                loader,
+                win7=True,
+                app_local=True,
+                local_dlls={"libgallium_wgl.dll"},
+            ))
+            # App-local does not bless a DLL that was not part of the checked set.
+            self.assertFalse(check_imports.check(
+                loader,
+                win7=True,
+                app_local=True,
+                local_dlls={"some_other.dll"},
+            ))
 
 
 if __name__ == "__main__":

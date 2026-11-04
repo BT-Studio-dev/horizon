@@ -3,8 +3,12 @@ name: horizon-Launcher Legacy
 # (`HORIZON_LAUNCHER_LEGACY=1`), statically linking the C runtime (`+crt-static`),
 # embedding the Windows 7 runtime API/COM/DirectWrite/DXGI/WARP shims, and verifying
 # that the resulting PE32+ executable imports zero Windows 8+/10+ DLLs or entry points.
-# Changing .github/launcher-legacy-release.txt to a launcher version publishes that
-# verified bundle as launcher@<version>; a manual run can do the same.
+# The zip also carries a pinned Windows 7 build of Mesa's llvmpipe software OpenGL
+# (opengl32.dll + libgallium_wgl.dll) beside the client for GPUs with no usable
+# native OpenGL, probe-verified against the built client before packaging.
+# Changing .github/launcher-legacy-release.txt (version=<version>, plus a request=
+# line bumped to re-publish the same version) publishes that verified bundle as
+# launcher@<version>; a manual run can do the same.
 
 on:
   push:
@@ -18,6 +22,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'packaging/icons/**'
+      - 'packaging/windows7/**'
       - 'tools/check_imports.py'
       - 'tools/check_isa.py'
       - '.github/workflows/launcher-legacy.yml'
@@ -70,7 +75,13 @@ jobs:
           release_file=.github/launcher-legacy-release.txt
           if [[ "$GITHUB_EVENT_NAME" == push ]] && git rev-parse HEAD^ >/dev/null 2>&1 \
               && git diff --name-only HEAD^ HEAD | grep -Fxq "$release_file"; then
-            version=$(tr -d '[:space:]' < "$release_file")
+            # version=<version> names the release; any other line (request=…)
+            # exists so the file can change, and the same version re-publish,
+            # without the version itself moving. A bare version still works.
+            version=$(sed -n 's/^version=[[:space:]]*//p' "$release_file" | head -1 | tr -d '\r[:space:]')
+            if [[ -z "$version" ]]; then
+              version=$(head -1 "$release_file" | tr -d '[:space:]')
+            fi
             publish=true
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -98,6 +109,15 @@ jobs:
       HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
       HORIZON_CURSEFORGE_API_KEY: ${{ secrets.HORIZON_CURSEFORGE_API_KEY }}
       HORIZON_LAUNCHER_VERSION: ${{ needs.release-request.outputs.version }}
+      # The bundled software OpenGL. 25.2.6 MSVC is the last mesa-dist-win
+      # build reported working on Windows 7 before 25.2.8/25.3.x picked up a
+      # CreateFile2 import (mesa-dist-win#233); the import check below holds
+      # any future pin to the same line. The MinGW package is not used: it
+      # imports api-ms-win-crt-* (UCRT) a clean Windows 7 SP1 does not ship.
+      MESA_VERSION: 25.2.6
+      MESA_ARCHIVE: mesa3d-25.2.6-release-msvc.7z
+      MESA_SHA256: 4d21205818fb946c3a94ae2552364a1ef14d3f8a907ccd98585907cf536510a5
+      GH_TOKEN: ${{ github.token }}
     defaults:
       run:
         working-directory: launcher
@@ -143,14 +163,47 @@ jobs:
           echo "$out"
           expected="${HORIZON_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}"
           [[ "$out" == "horizon-launcher $expected" ]] || { echo "::error::expected horizon-launcher $expected, got $out"; exit 1; }
+      - name: Fetch the bundled Mesa llvmpipe software OpenGL
+        run: |
+          set -euo pipefail
+          mesa_temp="$RUNNER_TEMP/mesa-$MESA_VERSION"
+          rm -rf "$mesa_temp" mesa-llvmpipe
+          mkdir -p "$mesa_temp/download" "$mesa_temp/extracted" mesa-llvmpipe
+          gh release download "$MESA_VERSION" --repo pal1000/mesa-dist-win \
+            --pattern "$MESA_ARCHIVE" --dir "$mesa_temp/download"
+          (cd "$mesa_temp/download" && sha256sum -c - <<EOF
+          $MESA_SHA256  $MESA_ARCHIVE
+          EOF
+          )
+          7z x "$mesa_temp/download/$MESA_ARCHIVE" -o"$mesa_temp/extracted" >/dev/null
+          loader=$(find "$mesa_temp/extracted" -type f -path '*/x64/opengl32.dll' -print -quit)
+          [[ -n "$loader" ]] || { echo "::error::Mesa $MESA_VERSION has no x64 opengl32.dll"; exit 1; }
+          mesa_x64=$(dirname "$loader")
+          cp "$mesa_x64/opengl32.dll" "$mesa_x64/libgallium_wgl.dll" mesa-llvmpipe/
+          cp ../packaging/windows7/MESA-NOTICE.txt mesa-llvmpipe/MESA-NOTICE.txt
+          ls -lh mesa-llvmpipe
+          (cd mesa-llvmpipe && sha256sum opengl32.dll libgallium_wgl.dll)
+          sizes=$(cd mesa-llvmpipe && stat --printf='%n=%s ' opengl32.dll libgallium_wgl.dll)
+          echo "::notice title=Bundled Mesa $MESA_VERSION::$MESA_ARCHIVE sha256 OK; staged $sizes"
       - name: Verify Windows 7 SP1 64-bit system library imports
         run: |
-          python ../tools/check_imports.py --win7 target/release/horizon-launcher.exe ../target/release/horizon-client.exe 2>&1 | tee "$RUNNER_TEMP/imp.log" || {
+          # First-party binaries: Windows system DLLs only. The two Mesa DLLs
+          # may import each other (they ship together) but nothing else past
+          # Windows 7 SP1 either.
+          status=0
+          python ../tools/check_imports.py --win7 target/release/horizon-launcher.exe ../target/release/horizon-client.exe > "$RUNNER_TEMP/imp.log" 2>&1 || status=1
+          python ../tools/check_imports.py --win7 --app-local mesa-llvmpipe/opengl32.dll mesa-llvmpipe/libgallium_wgl.dll >> "$RUNNER_TEMP/imp.log" 2>&1 || status=1
+          cat "$RUNNER_TEMP/imp.log"
+          if [[ $status -ne 0 ]]; then
             while IFS= read -r l; do [[ -n "$l" ]] && echo "::error::$l"; done < "$RUNNER_TEMP/imp.log"
             exit 1
-          }
+          fi
       - name: Verify legacy CPU instruction ceiling (Core 2 Duo / SSE4.1 era)
         run: |
+          # First-party binaries only: Mesa dispatches and JIT-compiles for
+          # the processor it finds, so its ceiling is the runtime caps the
+          # client sets (below), verified by import check plus probe, not a
+          # static census of code paths a capped CPU never enters.
           python -m pip install --quiet "capstone>=5,<6"
           python ../tools/check_isa.py target/release/horizon-launcher.exe ../target/release/horizon-client.exe
       - name: Smoke test CLI
@@ -168,15 +221,40 @@ jobs:
           "$launcher" links --json
           ../target/release/horizon-client.exe --help | grep -q -- '--resources'
           rm -rf "$HORIZON_LAUNCHER_HOME"
+      - name: Probe the built client against the bundled Mesa llvmpipe
+        run: |
+          # The exact combination the zip ships — this client, these two DLLs
+          # beside it — under the SSE4.1 ceiling of the Legacy floor. The
+          # client's own probe must come back with a llvmpipe OpenGL adapter.
+          # (On the player's processor the client sets these variables itself;
+          # the runner's CPU needs no ceiling, so the test sets them here.)
+          probe="$RUNNER_TEMP/mesa-probe"
+          rm -rf "$probe" && mkdir -p "$probe"
+          cp ../target/release/horizon-client.exe mesa-llvmpipe/opengl32.dll mesa-llvmpipe/libgallium_wgl.dll "$probe/"
+          log="$RUNNER_TEMP/mesa-probe.log"
+          if ! GALLIUM_DRIVER=llvmpipe GALLIUM_OVERRIDE_CPU_CAPS=sse4.1 LP_NATIVE_VECTOR_WIDTH=128 \
+              timeout 120 "$probe/horizon-client.exe" --horizon-opengl-probe > "$log" 2>&1; then
+            cat "$log"
+            tail -n 5 "$log" | while IFS= read -r l; do [[ -n "$l" ]] && echo "::error::$l"; done
+            exit 1
+          fi
+          cat "$log"
+          grep -q 'HORIZON_OPENGL_OK.*llvmpipe' "$log" || {
+            echo "::error::bundled Mesa probe did not report a llvmpipe adapter"
+            exit 1
+          }
+          echo "::notice title=Bundled Mesa probe::$(grep 'HORIZON_OPENGL_OK' "$log" | tail -1)"
       - name: Package Legacy Windows 7 x64 release archive
         run: |
           rm -rf dist out && mkdir -p dist out
           cp target/release/horizon-launcher.exe dist/horizon-launcher-legacy.exe
           cp ../target/release/horizon-client.exe dist/horizon-client.exe
+          cp mesa-llvmpipe/opengl32.dll mesa-llvmpipe/libgallium_wgl.dll mesa-llvmpipe/MESA-NOTICE.txt dist/
           cp target/release/horizon-launcher.exe out/horizon-launcher-legacy.exe
           cp target/release/horizon-launcher.exe out/horizon-launcher.exe
           cp ../target/release/horizon-client.exe out/horizon-client.exe
-          (cd dist && 7z a ../out/horizon-launcher-windows-x64-legacy.zip horizon-launcher-legacy.exe horizon-client.exe)
+          (cd dist && 7z a ../out/horizon-launcher-windows-x64-legacy.zip horizon-launcher-legacy.exe horizon-client.exe opengl32.dll libgallium_wgl.dll MESA-NOTICE.txt)
+          7z l out/horizon-launcher-windows-x64-legacy.zip
           (cd out && sha256sum horizon-launcher-windows-x64-legacy.zip horizon-launcher-legacy.exe horizon-launcher.exe horizon-client.exe > SHA256SUMS)
           ls -lh out
           cat out/SHA256SUMS
@@ -227,9 +305,9 @@ jobs:
           cat > release-notes.md <<'EOF'
           Windows 7 SP1 64-bit Legacy build for SSE4.1-era PCs, including the Intel Core 2 Duo E8400.
 
-          Download `horizon-launcher-windows-x64-legacy.zip`, extract it, keep `horizon-client.exe` beside `horizon-launcher-legacy.exe`, and run `horizon-launcher-legacy.exe`.
+          Download `horizon-launcher-windows-x64-legacy.zip`, extract it, and run `horizon-launcher-legacy.exe` from the extracted folder. Keep every file in the zip together: `opengl32.dll` and `libgallium_wgl.dll` beside `horizon-client.exe` are Mesa 25.2.6's llvmpipe software OpenGL (see `MESA-NOTICE.txt`), which gives the game an OpenGL 4.5 adapter on graphics hardware with no usable native OpenGL, such as Intel GMA 3100. The standalone `horizon-client.exe` download does not include that software renderer. Rendering on the CPU is slow — lower the resolution and render distance. On a GPU with a working native OpenGL driver, delete the two Mesa DLLs to use it instead.
 
-          This build uses the baseline x86-64 instruction set, avoids the bundled mimalloc POPCNT path in the game client, caps Mesa/Gallium to the processor's supported instructions, and preflights OpenGL/WGL in an isolated child process so an old Intel WGL driver fails as a controlled graphics error instead of taking down the game. Intel GMA 3100 still has no native OpenGL support for this renderer; a compatible Windows 7 Mesa llvmpipe `opengl32.dll` beside `horizon-client.exe` may provide slow software rendering.
+          This build uses the baseline x86-64 instruction set, avoids the bundled mimalloc POPCNT path in the game client, caps Mesa/Gallium to the processor's supported instructions, and preflights OpenGL/WGL in an isolated child process so an old Intel WGL driver fails as a controlled graphics error instead of taking down the game.
           EOF
           printf '\nBuilt from %s in %s.\n' "$GITHUB_SHA" "$GH_REPO" >> release-notes.md
           assets=(

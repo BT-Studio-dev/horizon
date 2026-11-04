@@ -1,0 +1,54 @@
+Bundled software OpenGL (Mesa llvmpipe)
+
+The Horizon Launcher Legacy zip includes these x64 files beside
+horizon-client.exe:
+
+  opengl32.dll
+  libgallium_wgl.dll
+
+They are unmodified copies from mesa3d-25.2.6-release-msvc.7z
+(SHA-256 4d21205818fb946c3a94ae2552364a1ef14d3f8a907ccd98585907cf536510a5),
+published as release 25.2.6 of mesa-dist-win:
+https://github.com/pal1000/mesa-dist-win/releases/tag/25.2.6
+
+Together they are Mesa's WGL loader and Gallium driver. On processors the
+Legacy build caps, Horizon asks Mesa for its llvmpipe driver: OpenGL in
+software on the CPU, for graphics hardware such as Intel GMA 3100 whose
+native Windows 7 OpenGL driver offers this renderer no adapter. Keep both
+DLLs beside horizon-client.exe. Deleting both returns the game to the
+native graphics driver. Software rendering is much slower than a GPU;
+expect to lower the resolution and render distance.
+
+Mesa's source is at https://gitlab.freedesktop.org/mesa/mesa and the
+Windows build scripts at https://github.com/pal1000/mesa-dist-win.
+
+Licenses
+
+Mesa is copyright its contributors and is distributed primarily under the
+MIT license below; some components carry their own permissive licenses,
+named in Mesa's source (docs/license.rst and the individual files).
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+The binaries link other open-source components, including LLVM
+(Apache License 2.0 with LLVM exception, https://llvm.org/),
+SPIRV-Tools (Apache License 2.0, https://github.com/KhronosGroup/SPIRV-Tools),
+zstd (BSD 3-clause license, https://github.com/facebook/zstd), and zlib
+(zlib license, https://www.zlib.net/). Each project's copyright and license
+notices apply to its part of the binaries.
