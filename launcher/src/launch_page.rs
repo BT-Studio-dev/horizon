@@ -177,10 +177,14 @@ impl Launcher {
         self.reload_instances();
     }
 
-    /// The instance's saved value, as the row shows it.
-    fn saved_memory(instance: &instances::Instance) -> Option<u32> {
+    /// The instance's saved value, as the row shows it. A Java instance with
+    /// none saved shows the heap Play will give it on this computer.
+    fn saved_memory(instance: &instances::Instance, total_mb: u32) -> Option<u32> {
         match &instance.java {
-            Some(java) => Some(java.memory_mb.unwrap_or(instances::DEFAULT_MEMORY_MB)),
+            Some(java) => Some(
+                java.memory_mb
+                    .unwrap_or_else(|| instances::default_memory_mb(total_mb)),
+            ),
             None => instance.launch.memory_limit(),
         }
     }
@@ -195,10 +199,11 @@ impl Launcher {
             .to_string()));
             return;
         };
+        let total = self.memory_slider.total();
         let same = instances::list()
             .iter()
             .find(|i| i.id == id)
-            .is_some_and(|i| Self::saved_memory(i) == memory);
+            .is_some_and(|i| Self::saved_memory(i, total) == memory);
         if !same {
             self.save_memory(id, memory);
         }
@@ -243,7 +248,7 @@ impl Launcher {
         let memory = self
             .memory_slider
             .dragging
-            .unwrap_or_else(|| Self::saved_memory(&instance));
+            .unwrap_or_else(|| Self::saved_memory(&instance, total));
         self.sync_memory_box(&instance.id, memory);
         let typed = launch::parse_memory(self.servers.value(Field::MemoryLimit));
         // While typing, the slider follows a value it can read.

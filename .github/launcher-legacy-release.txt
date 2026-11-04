@@ -1,2 +1,2 @@
 version=0.2.40
-request=mesa-llvmpipe-1
+request=java-llvmpipe-low-memory-1

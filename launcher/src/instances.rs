@@ -166,7 +166,7 @@ pub struct JavaGame {
     /// A Java home to run it on instead of the automatic pick.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home: Option<PathBuf>,
-    /// The most memory the game may use, in MiB (`-Xmx`); none: [`DEFAULT_MEMORY_MB`].
+    /// The most memory the game may use, in MiB (`-Xmx`); none: [`default_memory_mb`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_mb: Option<u32>,
     /// Extra JVM arguments, split on whitespace.
@@ -199,8 +199,15 @@ impl JavaGame {
     }
 }
 
-/// 4 GiB: enough for vanilla and most modpacks, as other launchers start with.
-pub const DEFAULT_MEMORY_MB: u32 = 4096;
+/// The Java heap a new instance starts with when the player has chosen none:
+/// half the computer's memory, in whole 256 MiB steps, from 1 GiB to 4 GiB.
+/// The other half stays for the system, the launcher and the JVM's memory
+/// outside its heap — a fixed 4 GiB on a 4 GiB computer left none of it,
+/// so Java swapped or refused to start. A value the player picks is kept
+/// exactly as picked.
+pub fn default_memory_mb(total_mb: u32) -> u32 {
+    (total_mb / 2 / 256 * 256).clamp(1024, 4096)
+}
 
 fn is_zero(n: &u64) -> bool {
     *n == 0

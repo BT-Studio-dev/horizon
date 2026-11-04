@@ -166,6 +166,13 @@ const LEGACY_MESA_DLLS: [&str; 2] = ["opengl32.dll", "libgallium_wgl.dll"];
 #[cfg(not(windows))]
 const LEGACY_MESA_DLLS: [&str; 0] = [];
 
+/// In a Mojang Java runtime's `bin`: what Horizon copied there for a Java
+/// instance (`sync_legacy_mesa_dlls_in`), as each DLL's name and length.
+/// Delete the bundled pair beside the launcher and the next Play takes the
+/// copies out again; a pair the player put there has no marker and stays.
+#[cfg(any(windows, test))]
+const LEGACY_MESA_MARKER: &str = "horizon-llvmpipe.txt";
+
 /// The agent `url` is fetched with: the launcher's own user agent, through the player's proxy when
 /// one is set (`proxy`).
 fn agent(url: &str) -> ureq::Agent {
@@ -1563,25 +1570,232 @@ pub fn java_game(
             crate::java::install(&need, log)?
         }
     };
-    let jvm_args: Vec<String> = game.jvm_args.split_whitespace().map(String::from).collect();
+    let software_opengl = prepare_legacy_java_software_opengl(&runtime, log);
+    let mut jvm_args: Vec<String> =
+        game.jvm_args.split_whitespace().map(String::from).collect();
+    if let Some(loader) = &software_opengl {
+        // LWJGL looks for opengl32 in its own system paths; name the Mesa
+        // loader outright. First of the extra arguments, so a libname of
+        // the player's own, later in theirs, still wins.
+        jvm_args.insert(
+            0,
+            format!("-Dorg.lwjgl.opengl.libname={}", loader.display()),
+        );
+    }
     fs::create_dir_all(&instance.home).map_err(|e| format!("{}: {e}", instance.home.display()))?;
-    crate::java_launch::command(
+    let mut cmd = crate::java_launch::command(
         &version,
         &crate::java_launch::Launch {
             minecraft: &minecraft,
             game_dir: &instance.home,
             natives: &natives,
             java: &runtime.java(),
-            memory_mb: game
-                .memory_mb
-                .unwrap_or(crate::instances::DEFAULT_MEMORY_MB),
+            memory_mb: game.memory_mb.unwrap_or_else(|| {
+                crate::instances::default_memory_mb(crate::launch::total_memory_mb())
+            }),
             jvm_args: &jvm_args,
             player: &player,
             os: crate::java_launch::os_name(),
             window: game.window,
             server,
         },
-    )
+    )?;
+    if software_opengl.is_some() {
+        apply_legacy_java_software_opengl_env(&mut cmd);
+    }
+    Ok(cmd)
+}
+
+#[cfg(any(windows, test))]
+fn legacy_mesa_marker(source_dir: &Path, dlls: &[&str]) -> Option<String> {
+    if dlls.is_empty() {
+        return None;
+    }
+    let mut lines = Vec::with_capacity(dlls.len());
+    for dll in dlls {
+        let len = fs::metadata(source_dir.join(dll)).ok()?.len();
+        lines.push(format!("{dll}={len}"));
+    }
+    Some(format!("{}\n", lines.join("\n")))
+}
+
+/// Keeps a Java runtime's `bin` in step with the Mesa pair beside the
+/// launcher: copied in while the pair is there, taken out when it goes, so
+/// deleting the bundled DLLs returns Java to its native driver as it does
+/// the bundled client. `javaw.exe`'s own folder is where Windows looks for
+/// `opengl32.dll` first, which is what makes the copy the one LWJGL loads.
+/// A pair already there without Horizon's marker is the player's own and is
+/// left alone. Whether a software pair is in place for this launch.
+#[cfg(any(windows, test))]
+fn sync_legacy_mesa_dlls_in(
+    source_dir: &Path,
+    target_dir: &Path,
+    dlls: &[&str],
+) -> Result<bool, String> {
+    if dlls.is_empty() {
+        return Ok(false);
+    }
+    let marker_path = target_dir.join(LEGACY_MESA_MARKER);
+    let managed = marker_path.is_file();
+    let targets: Vec<PathBuf> = dlls.iter().map(|dll| target_dir.join(dll)).collect();
+    if !managed && targets.iter().all(|p| p.is_file()) {
+        return Ok(true);
+    }
+    let Some(wanted) = legacy_mesa_marker(source_dir, dlls) else {
+        if managed {
+            for target in &targets {
+                if target.is_file() {
+                    fs::remove_file(target)
+                        .map_err(|e| format!("{}: {e}", target.display()))?;
+                }
+            }
+            fs::remove_file(&marker_path)
+                .map_err(|e| format!("{}: {e}", marker_path.display()))?;
+        }
+        return Ok(false);
+    };
+    if targets.iter().all(|p| p.is_file())
+        && fs::read_to_string(&marker_path).ok().as_deref() == Some(wanted.as_str())
+    {
+        return Ok(true);
+    }
+    if !managed && targets.iter().any(|p| p.is_file()) {
+        return Err(format!(
+            "{} holds only part of an OpenGL deployment; leaving it alone",
+            target_dir.display()
+        ));
+    }
+    for dll in dlls {
+        let source = source_dir.join(dll);
+        let target = target_dir.join(dll);
+        let source_len = fs::metadata(&source)
+            .map_err(|e| format!("{}: {e}", source.display()))?
+            .len();
+        let current_len = fs::metadata(&target).map(|m| m.len()).ok();
+        if current_len == Some(source_len) {
+            continue;
+        }
+        if target.is_file() {
+            replace_binary(&source, &target)
+                .map_err(|e| format!("{}: {e}", target.display()))?;
+        } else {
+            fs::copy(&source, &target)
+                .map_err(|e| format!("{}: {e}", target.display()))?;
+        }
+    }
+    fs::write(&marker_path, wanted).map_err(|e| format!("{}: {e}", marker_path.display()))?;
+    Ok(true)
+}
+
+/// On Legacy Windows, puts the bundled Mesa pair beside a Mojang-managed
+/// Java (`sync_legacy_mesa_dlls_in`) so a Java instance gets the same
+/// llvmpipe the bundled client gets: without it, `javaw.exe` loads the
+/// system `opengl32.dll`, and a GMA 3100 has no OpenGL the game can use.
+/// An installed Java the player picked is never written to; its loader is
+/// the pair already beside it, else the one beside the launcher, which
+/// LWJGL is then named directly (`java_game`). A copy failure falls back
+/// the same way, then to the native driver. The `opengl32.dll` to load.
+fn prepare_legacy_java_software_opengl(
+    runtime: &crate::java::Runtime,
+    log: &dyn Fn(String),
+) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        if !needs_win7_binary_compat() {
+            return None;
+        }
+        let java = runtime.java();
+        let target_dir = java.parent()?;
+        let target_loader = target_dir.join("opengl32.dll");
+        let target_pair = LEGACY_MESA_DLLS
+            .iter()
+            .all(|dll| target_dir.join(dll).is_file())
+            .then(|| target_loader.clone());
+        let exe = std::env::current_exe().ok();
+        let source_dir = exe.as_deref().and_then(Path::parent);
+        let source_loader = source_dir.and_then(|dir| {
+            LEGACY_MESA_DLLS
+                .iter()
+                .all(|dll| dir.join(dll).is_file())
+                .then(|| dir.join("opengl32.dll"))
+        });
+        if runtime.source != crate::java::Source::Mojang {
+            return target_pair.or(source_loader);
+        }
+        let Some(source_dir) = source_dir else {
+            return target_pair;
+        };
+        match sync_legacy_mesa_dlls_in(source_dir, target_dir, &LEGACY_MESA_DLLS) {
+            Ok(true) => {
+                log("Using Mesa llvmpipe software OpenGL for this Java instance".into());
+                Some(target_loader)
+            }
+            Ok(false) => None,
+            Err(e) => {
+                log(format!(
+                    "Bundled software OpenGL could not be copied beside Java ({e}); \
+                     loading the launcher's copy instead"
+                ));
+                target_pair.or(source_loader)
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (runtime, log);
+        None
+    }
+}
+
+/// The Mesa/Gallium CPU ceiling for this processor, as the bundled client
+/// sets for itself (`horizon_threads::legacy_gallium_cpu_caps`): none once
+/// it has SSE4.2, POPCNT and AVX together.
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn legacy_java_gallium_caps() -> Option<&'static str> {
+    if is_x86_feature_detected!("sse4.2")
+        && is_x86_feature_detected!("popcnt")
+        && is_x86_feature_detected!("avx")
+    {
+        return None;
+    }
+    Some(if is_x86_feature_detected!("sse4.1") {
+        "sse4.1"
+    } else if is_x86_feature_detected!("ssse3") {
+        "ssse3"
+    } else if is_x86_feature_detected!("sse3") {
+        "sse3"
+    } else if is_x86_feature_detected!("sse2") {
+        "sse2"
+    } else if is_x86_feature_detected!("sse") {
+        "sse"
+    } else {
+        "nosse"
+    })
+}
+
+#[cfg(not(all(windows, target_arch = "x86_64")))]
+fn legacy_java_gallium_caps() -> Option<&'static str> {
+    None
+}
+
+/// What a Java launch on the bundled Mesa runs with: llvmpipe, kept inside
+/// this processor's instructions. A variable the player already has (in
+/// the environment, or the instance's own, which `launch::wrap` puts on
+/// after this) wins.
+fn apply_legacy_java_software_opengl_env(cmd: &mut Command) {
+    let mut set = |name: &'static str, value: &'static str| {
+        if std::env::var_os(name).is_none() {
+            cmd.env(name, value);
+        }
+    };
+    set("GALLIUM_DRIVER", "llvmpipe");
+    if let Some(caps) = legacy_java_gallium_caps() {
+        set("GALLIUM_OVERRIDE_CPU_CAPS", caps);
+        set("LP_NATIVE_VECTOR_WIDTH", "128");
+        if caps == "sse2" {
+            set("LP_FORCE_SSE2", "1");
+        }
+    }
 }
 
 /// What [`download_for_owner`] does with the owner gate's answer: Mojang's files only for its
@@ -4443,6 +4657,54 @@ pub fn {f}("
             resolve_client_program_with(&ver_dir, Some(&launcher_exe), true),
             ver_client
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn legacy_mesa_pair_follows_the_launcher_into_a_java_runtime() {
+        let dlls = ["opengl32.dll", "libgallium_wgl.dll"];
+        let root = std::env::temp_dir().join(format!(
+            "horizon-legacy-mesa-java-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let launcher = root.join("launcher");
+        let bin = root.join("runtime/bin");
+        fs::create_dir_all(&launcher).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(launcher.join(dlls[0]), b"loader").unwrap();
+        fs::write(launcher.join(dlls[1]), b"gallium").unwrap();
+
+        assert!(sync_legacy_mesa_dlls_in(&launcher, &bin, &dlls).unwrap());
+        assert_eq!(fs::read(bin.join(dlls[0])).unwrap(), b"loader");
+        assert_eq!(fs::read(bin.join(dlls[1])).unwrap(), b"gallium");
+        assert_eq!(
+            fs::read_to_string(bin.join(LEGACY_MESA_MARKER)).unwrap(),
+            "opengl32.dll=6\nlibgallium_wgl.dll=7\n"
+        );
+
+        // A newer bundled driver replaces the copy.
+        fs::write(launcher.join(dlls[1]), b"gallium-driver").unwrap();
+        assert!(sync_legacy_mesa_dlls_in(&launcher, &bin, &dlls).unwrap());
+        assert_eq!(fs::read(bin.join(dlls[1])).unwrap(), b"gallium-driver");
+
+        // Deleting the bundled pair takes Horizon's copies back out.
+        fs::remove_file(launcher.join(dlls[0])).unwrap();
+        assert!(!sync_legacy_mesa_dlls_in(&launcher, &bin, &dlls).unwrap());
+        assert!(!bin.join(dlls[0]).exists());
+        assert!(!bin.join(dlls[1]).exists());
+        assert!(!bin.join(LEGACY_MESA_MARKER).exists());
+
+        // A pair the player put there is used and left alone, in whole or part.
+        fs::write(bin.join(dlls[0]), b"own loader").unwrap();
+        fs::write(bin.join(dlls[1]), b"own gallium").unwrap();
+        assert!(sync_legacy_mesa_dlls_in(&launcher, &bin, &dlls).unwrap());
+        assert_eq!(fs::read(bin.join(dlls[0])).unwrap(), b"own loader");
+        fs::write(launcher.join(dlls[0]), b"loader").unwrap();
+        fs::remove_file(bin.join(dlls[1])).unwrap();
+        assert!(sync_legacy_mesa_dlls_in(&launcher, &bin, &dlls).is_err());
+        assert_eq!(fs::read(bin.join(dlls[0])).unwrap(), b"own loader");
+
         let _ = fs::remove_dir_all(&root);
     }
 

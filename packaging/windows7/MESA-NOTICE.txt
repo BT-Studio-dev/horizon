@@ -15,9 +15,13 @@ Together they are Mesa's WGL loader and Gallium driver. On processors the
 Legacy build caps, Horizon asks Mesa for its llvmpipe driver: OpenGL in
 software on the CPU, for graphics hardware such as Intel GMA 3100 whose
 native Windows 7 OpenGL driver offers this renderer no adapter. Keep both
-DLLs beside horizon-client.exe. Deleting both returns the game to the
-native graphics driver. Software rendering is much slower than a GPU;
-expect to lower the resolution and render distance.
+DLLs beside horizon-client.exe. When a Minecraft: Java Edition instance
+starts on a Mojang-managed Java runtime, the launcher also keeps a copy of
+the pair beside that runtime's javaw.exe, where Java looks for OpenGL, and
+removes its copies when the pair beside the launcher is deleted. Deleting
+both returns the games to the native graphics driver. Software rendering
+is much slower than a GPU; expect to lower the resolution and render
+distance.
 
 Mesa's source is at https://gitlab.freedesktop.org/mesa/mesa and the
 Windows build scripts at https://github.com/pal1000/mesa-dist-win.

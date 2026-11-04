@@ -290,6 +290,16 @@ fn play_time_adds_up_per_instance_and_survives_a_rename() {
 }
 
 #[test]
+fn a_new_java_instance_keeps_half_the_computers_memory_for_everything_else() {
+    assert_eq!(default_memory_mb(0), 1024);
+    assert_eq!(default_memory_mb(2048), 1024);
+    assert_eq!(default_memory_mb(4026), 1792);
+    assert_eq!(default_memory_mb(4096), 2048);
+    assert_eq!(default_memory_mb(8192), 4096);
+    assert_eq!(default_memory_mb(65536), 4096);
+}
+
+#[test]
 fn play_time_reads_as_minutes_then_hours() {
     let t = |s| play_time(Duration::from_secs(s));
     assert_eq!(t(59), "under a minute");

@@ -13,9 +13,10 @@ Apache-2.0; both licenses are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
 The Windows 7 Legacy zip (built by `.github/workflows/launcher-legacy.yml`, not stored in this
 repository) bundles `opengl32.dll` and `libgallium_wgl.dll` from
 [mesa-dist-win](https://github.com/pal1000/mesa-dist-win/releases/tag/25.2.6) 25.2.6 —
-[Mesa](https://gitlab.freedesktop.org/mesa/mesa) by its contributors — beside the client, so CPUs
-of the Legacy floor get OpenGL from Mesa's llvmpipe software renderer when the native driver offers
-none. Mesa is primarily MIT; the zip carries the full attribution in `MESA-NOTICE.txt`
+[Mesa](https://gitlab.freedesktop.org/mesa/mesa) by its contributors — beside the client (and, at
+launch, beside a Mojang-managed Java for Java instances), so CPUs of the Legacy floor get OpenGL
+from Mesa's llvmpipe software renderer when the native driver offers none. Mesa is primarily MIT;
+the zip carries the full attribution in `MESA-NOTICE.txt`
 (`packaging/windows7/MESA-NOTICE.txt` in this repository).
 
 ## naga
