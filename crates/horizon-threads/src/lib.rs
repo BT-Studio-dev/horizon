@@ -351,18 +351,31 @@ pub fn prepare_legacy_graphics_environment() -> Option<&'static str> {
 /// World generation, meshing and the tick allocate and free small blocks on
 /// every worker at once; the system heaps serialise them (Windows' heap was
 /// 16% of a chunk's generation time), mimalloc keeps a heap per thread.
+///
+/// The Legacy build takes the system heap instead: the mimalloc bundled by
+/// `libmimalloc-sys` 0.1.49 runs `__popcnt64` with no CPUID check on MSVC
+/// x64, and a Core 2 Duo (the Legacy floor) has no POPCNT — the game's very
+/// first allocations would end in 0xc000001d. Processors that old have two
+/// cores; they do not miss the per-thread heaps.
+#[cfg(Horizon_legacy_build)]
+pub use std::alloc::System as Allocator;
+/// The game's global allocator: mimalloc (see the Legacy note above).
+#[cfg(not(Horizon_legacy_build))]
 pub use mimalloc::MiMalloc as Allocator;
 
 /// `mi_option_purge_delay` in mimalloc.h (index 15 in v2 and v3); the bindings
 /// don't name it.
+#[cfg(not(Horizon_legacy_build))]
 const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
 
 /// Set the allocator up, first thing in `main`: free pages go back to the OS
 /// at once instead of a second later. With mimalloc's delay the game held a
 /// quarter more memory than with the system heap; without it a few percent,
-/// and generation keeps most of its speed-up.
+/// and generation keeps most of its speed-up. The Legacy build's system heap
+/// has no such delay to set.
 pub fn configure_allocator() {
     win7::init();
+    #[cfg(not(Horizon_legacy_build))]
     // SAFETY: sets one integer option, which mimalloc reads at each purge.
     unsafe {
         libmimalloc_sys::mi_option_set(PURGE_DELAY, 0);
@@ -374,6 +387,7 @@ pub fn configure_allocator() {
 /// native libraries still use: glibc keeps freed pages in the arena of the
 /// thread that allocated them, and macOS in its zones until memory runs short.
 pub fn release_free_memory() {
+    #[cfg(not(Horizon_legacy_build))]
     // SAFETY: frees only pages no allocation uses (this thread's heap, shared arenas).
     unsafe {
         libmimalloc_sys::mi_collect(true);
@@ -604,6 +618,7 @@ mod tests {
 
     /// The option set is the purge delay: mimalloc v3's default for it is
     /// 1000 ms, and it is 0 once configured.
+    #[cfg(not(Horizon_legacy_build))]
     #[test]
     fn configuring_the_allocator_purges_at_once() {
         // SAFETY: reads and sets one integer option.

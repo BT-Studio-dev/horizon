@@ -41,7 +41,7 @@ jobs:
   build-legacy:
     name: build windows-7-x64 (Legacy)
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
     env:
       # x86-64 baseline codegen (SSE2/SSE3, no SSE4.2/POPCNT/AVX) for both
       # rustc and the cc-built C (mimalloc, ring): Core 2 Duo-class CPUs
@@ -51,6 +51,9 @@ jobs:
       RUSTFLAGS: -C target-feature=+crt-static -C target-cpu=generic
       CFLAGS: /arch:SSE2
       CXXFLAGS: /arch:SSE2
+      # Also read by crates/horizon-threads/build.rs: the Legacy game takes
+      # the system allocator, because bundled mimalloc runs __popcnt64
+      # unguarded on MSVC x64 and a Core 2 Duo has no POPCNT.
       HORIZON_LAUNCHER_LEGACY: "1"
       HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
       HORIZON_CURSEFORGE_API_KEY: ${{ secrets.HORIZON_CURSEFORGE_API_KEY }}
