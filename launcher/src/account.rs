@@ -2154,21 +2154,21 @@ fn session_file(game_home: &Path, pass: Launch) -> (Option<PathBuf>, Option<Stri
 /// gets no session (see `java_launch::offline_player`).
 pub fn java_player() -> Result<crate::java_launch::Player, String> {
     let mut accounts = Accounts::load();
-    let player = offline_fallback(
+    let player = match offline_fallback(
         &Endpoints::live(),
         client_id().as_deref(),
         store(),
         &mut accounts,
-    )
-    .map_err(|e| {
-        // A Microsoft account selected while this build cannot sign in has no name to play
-        // under on its own: the game's own name is who plays, as every launcher's offline mode
-        // does, instead of Play stopping dead.
-        match (sign_in_refused(), &accounts.player()) {
+    ) {
+        Ok(player) => Ok(player),
+        // A Microsoft account selected in a build that cannot sign in has no name to play under
+        // of its own: the game's own name plays, as every launcher's offline mode does, instead
+        // of Play stopping dead.
+        Err(e) => match (sign_in_refused(), accounts.player()) {
             (true, Player::Microsoft(_)) => crate::java_launch::offline_player(PLAYER_NAME),
             _ => Err(e),
-        }
-    });
+        },
+    };
     let _ = accounts.save();
     player
 }
