@@ -1525,10 +1525,7 @@ fn installed_minecraft(id: &str, log: &dyn Fn(String)) -> Option<PathBuf> {
         .into_iter()
         .filter(|dir| *dir != linked)
         .find(|dir| has_version(dir, id).unwrap_or(false))?;
-    log(format!(
-        "Using Minecraft {id} from {}",
-        dir.display()
-    ));
+    log(format!("Using Minecraft {id} from {}", dir.display()));
     Some(dir)
 }
 
