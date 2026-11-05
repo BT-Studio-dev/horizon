@@ -1521,7 +1521,14 @@ fn has_version(root: &Path, id: &str) -> Result<bool, String> {
 /// none is written to.
 fn installed_minecraft(id: &str, log: &dyn Fn(String)) -> Option<PathBuf> {
     let linked = data_dir().join("linked-minecraft");
-    let dir = minecraft_folders()
+    let mut folders: Vec<PathBuf> = Vec::new();
+    // The folder picked can be inside the install rather than its `versions`, `libraries` and
+    // `assets` (`F:\Minecraft\game` in `F:\Minecraft`, a launcher's instance folder).
+    if let Some(chosen) = Settings::load().minecraft_dir {
+        folders.extend(chosen.ancestors().take(4).map(Path::to_path_buf));
+    }
+    folders.extend(minecraft_folders());
+    let dir = folders
         .into_iter()
         .filter(|dir| *dir != linked)
         .find(|dir| has_version(dir, id).unwrap_or(false))?;
