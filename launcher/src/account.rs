@@ -2117,8 +2117,8 @@ fn offline_fallback(
             // A Microsoft account's name is its own; an offline name's letters may not be
             // the game's idea of one, so it is checked before it is used.
             Player::Microsoft(_) => Err(refused),
-            Player::Offline(name) => crate::java_launch::offline_player(name)?,
-            Player::GameName => crate::java_launch::offline_player(PLAYER_NAME)?,
+            Player::Offline(name) => crate::java_launch::offline_player(name),
+            Player::GameName => crate::java_launch::offline_player(PLAYER_NAME),
         },
         Err(refused) => Err(refused),
     }
