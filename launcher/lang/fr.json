@@ -666,5 +666,7 @@
   "Play offline as the game's own name": "Jouer hors ligne avec le nom du jeu",
   "This build has no Microsoft sign-in, so it plays offline only.": "Cette version n'a pas de connexion Microsoft : elle ne joue qu'hors ligne.",
   "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.": "Les mondes et serveurs hors ligne fonctionnent. Les serveurs en ligne demandent un compte connecté.",
-  "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline. With no copy yet, install Java Edition with the official launcher first.": "Jouer lance Minecraft {version} hors ligne depuis la copie de ce PC (celle de Horizon ou d'un autre launcher). S'il n'y en a pas encore, installe d'abord Java Edition avec le launcher officiel."
+  "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline. With no copy yet, install Java Edition with the official launcher first.": "Jouer lance Minecraft {version} hors ligne depuis la copie de ce PC (celle de Horizon ou d'un autre launcher). S'il n'y en a pas encore, installe d'abord Java Edition avec le launcher officiel.",
+  "Microsoft refused this launcher's app registration, so it cannot sign in: it plays offline.": "Microsoft a refusé l'inscription d'application de ce launcher : il ne peut pas se connecter et joue hors ligne.",
+  "Microsoft refused this launcher's app registration, so signing in fails.": "Microsoft a refusé l'inscription d'application de ce launcher, c'est pourquoi la connexion échoue."
 }

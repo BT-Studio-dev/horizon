@@ -78,10 +78,13 @@ impl Launcher {
     pub(crate) fn owner_screen(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let t = self.theme;
         let n = t.night;
-        let configured = account::client_id().is_some();
+        // A build with no client ID, or one Microsoft refused, cannot sign in: Play queues the
+        // offline way out instead of a sign-in that cannot work.
+        let configured = !account::sign_in_refused();
         // The screenshot preview shows a code without asking Microsoft for one.
         let state = match &self.sign_in_state {
             _ if sign_in_preview() => Shown::Code("https://www.microsoft.com/link", "K7Q-4MXR"),
+            _ if !configured && account::refused() => Shown::Error(tr(account::REFUSED_LINE)),
             _ if !configured => Shown::Error(tr(account::NOT_CONFIGURED)),
             Some(SignInState::Starting) => Shown::Starting("Asking Microsoft…"),
             Some(SignInState::Working(phase)) => Shown::Starting(phase.label()),
@@ -112,6 +115,11 @@ impl Launcher {
             .child(if configured {
                 line(
                     "Horizon needs a Microsoft account that owns Minecraft: Java Edition, like other launchers.",
+                    n.ink_soft,
+                )
+            } else if account::refused() {
+                line(
+                    "Microsoft refused this launcher's app registration, so signing in fails.",
                     n.ink_soft,
                 )
             } else {

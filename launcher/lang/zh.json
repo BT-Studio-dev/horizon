@@ -666,5 +666,7 @@
   "Play offline as the game's own name": "以游戏自带名称离线游戏",
   "This build has no Microsoft sign-in, so it plays offline only.": "此版本没有 Microsoft 登录，只能离线游戏。",
   "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.": "离线模式的世界和服务器可用；在线服务器需要已登录的账号。",
-  "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline. With no copy yet, install Java Edition with the official launcher first.": "「开始游戏」会从此电脑上的副本（Horizon 或其他启动器的）离线启动 Minecraft {version}。还没有副本的话，请先用官方启动器安装 Java Edition。"
+  "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline. With no copy yet, install Java Edition with the official launcher first.": "「开始游戏」会从此电脑上的副本（Horizon 或其他启动器的）离线启动 Minecraft {version}。还没有副本的话，请先用官方启动器安装 Java Edition。",
+  "Microsoft refused this launcher's app registration, so it cannot sign in: it plays offline.": "Microsoft 拒绝了这个启动器的应用注册，因此无法登录：将以离线方式游戏。",
+  "Microsoft refused this launcher's app registration, so signing in fails.": "Microsoft 拒绝了这个启动器的应用注册，因此登录会失败。"
 }

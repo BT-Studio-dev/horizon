@@ -33,6 +33,13 @@ const NO_PROFILE: &str =
 const OTHER_PROFILE: &str =
     "The Microsoft account now has another Minecraft profile. Sign in again.";
 const SIGN_IN_AGAIN: &str = "Your Microsoft sign-in expired. Sign in again.";
+/// The window's line when Microsoft refused the client ID this build has (`refused`): a sign-in
+/// offered here fails every time, so the window says so and offers offline play instead.
+pub const REFUSED_LINE: &str =
+    "Microsoft refused this launcher's app registration, so it cannot sign in: it plays offline.";
+/// Microsoft's answer to a client ID it does not accept (`invalid_client`): the launcher's app
+/// registration was refused, which no sign-in can get past. See [`sign_in_refused`].
+const REFUSED: &str = "Microsoft refused this launcher's app registration (client ID).";
 /// The name the game makes up for itself with no name to play under (`Player::GameName`).
 const PLAYER_NAME: &str = "Player";
 /// The Minecraft token is renewed when it has less than this left.
@@ -46,6 +53,49 @@ pub fn client_id() -> Option<String> {
         .or_else(|| option_env!("HORIZON_MSA_CLIENT_ID").map(str::to_owned))
         .map(|id| id.trim().to_owned())
         .filter(|id| !id.is_empty())
+}
+
+/// Whether this build cannot sign in, and so plays offline only: no Microsoft client ID is
+/// configured, or Microsoft refused the one it has ([`REFUSED`]).
+///
+/// A refusal is as final as a missing ID — the app registration belongs to whoever builds the
+/// launcher, so no player can do anything about it, and Play would otherwise ask for a sign-in
+/// that fails every time. A refusal seen once is kept in the data folder (the launcher's own
+/// file, never an account's) so the window says so from the start, and a build that signs in
+/// again, or another client ID by `HORIZON_MSA_CLIENT_ID`, clears it.
+pub fn sign_in_refused() -> bool {
+    client_id().is_none() || refusal().is_some()
+}
+
+/// The client ID Microsoft refused, as it was written down (none once signed in or changed).
+fn refusal() -> Option<String> {
+    let path = crate::backend::data_dir().join(REFUSED_FILE);
+    let refused = fs::read_to_string(path).ok()?.trim().to_owned();
+    (!refused.is_empty()).then_some(refused)
+}
+
+/// [`sign_in_refused`]: a build that cannot sign in plays offline only (see
+/// `java_launch::offline_player` and `backend::Settings::dev_offline`).
+pub fn cannot_sign_in() -> bool {
+    sign_in_refused()
+}
+
+/// Whether Microsoft refused this launcher's app registration: the window then says that
+/// instead of offering a sign-in that cannot work.
+pub fn refused() -> bool {
+    refusal().is_some()
+}
+
+fn note_refusal() {
+    let path = crate::backend::data_dir().join(REFUSED_FILE);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, client_id().unwrap_or_default());
+}
+
+fn clear_refusal() {
+    let _ = fs::remove_file(crate::backend::data_dir().join(REFUSED_FILE));
 }
 
 /// Where the requests go: the real services, or a mock in tests.
@@ -148,6 +198,9 @@ impl std::fmt::Debug for DeviceCode {
     }
 }
 
+/// Kept beside the accounts when Microsoft refused the client ID (`sign_in_refused`).
+const REFUSED_FILE: &str = "sign-in-refused.txt";
+
 /// The Microsoft tokens; the access token only lasts for the Xbox step.
 pub struct MsTokens {
     access: String,
@@ -201,9 +254,7 @@ fn oauth_error(v: &Value) -> String {
         Some("expired_token") => "The sign-in code expired. Start again.".into(),
         Some("bad_verification_code") => "The sign-in code was not recognised. Start again.".into(),
         Some("invalid_grant") => SIGN_IN_AGAIN.into(),
-        Some("invalid_client" | "unauthorized_client") => {
-            "Microsoft refused this launcher's app registration (client ID).".into()
-        }
+        Some("invalid_client" | "unauthorized_client") => REFUSED.into(),
         Some(other) => format!("Microsoft sign-in failed ({other})."),
         None => "Microsoft sign-in failed.".into(),
     }
@@ -564,8 +615,15 @@ fn check_with(
             .ok_or_else(|| NOT_CONFIGURED.to_string())
             .and_then(|id| refresh_ms(ep, id, &secrets.refresh_token));
         let ms = match renewed {
-            Ok(ms) => ms,
+            Ok(ms) => {
+                // The registration answers: a refusal noted by an older build is over.
+                clear_refusal();
+                ms
+            }
             Err(e) => {
+                if e == REFUSED {
+                    note_refusal();
+                }
                 secrets.sign_in_required = e == SIGN_IN_AGAIN;
                 return Check::NoAnswer(e, secrets);
             }
@@ -2100,7 +2158,16 @@ pub fn java_player() -> Result<crate::java_launch::Player, String> {
         client_id().as_deref(),
         store(),
         &mut accounts,
-    );
+    )
+    .map_err(|e| {
+        // A Microsoft account selected while this build cannot sign in has no name to play
+        // under on its own: the game's own name is who plays, as every launcher's offline mode
+        // does, instead of Play stopping dead.
+        match (sign_in_refused(), &accounts.player()) {
+            (true, Player::Microsoft(_)) => crate::java_launch::offline_player(PLAYER_NAME),
+            _ => Err(e),
+        }
+    });
     let _ = accounts.save();
     player
 }
@@ -2113,7 +2180,7 @@ fn offline_fallback(
 ) -> Result<crate::java_launch::Player, String> {
     match java_player_with(ep, client_id, store, accounts) {
         Ok(player) => Ok(player),
-        Err(refused) if client_id.is_none() => match &accounts.player() {
+        Err(refused) if sign_in_refused() => match &accounts.player() {
             // A Microsoft account's name is its own; an offline name's letters may not be
             // the game's idea of one, so it is checked before it is used.
             Player::Microsoft(_) => Err(refused),

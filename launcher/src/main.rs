@@ -910,7 +910,7 @@ impl Launcher {
                             // Play is offline from the first press: offline-mode worlds and
                             // servers work, an online-mode server refuses the name, and the
                             // window says so instead of asking for a sign-in it cannot offer.
-                            Err(account::NoOwner) if account::client_id().is_none() => {
+                            Err(account::NoOwner) if account::sign_in_refused() => {
                                 self.settings.dev_offline = true;
                                 self.settings.save();
                                 self.client_error = Some(
@@ -2903,7 +2903,7 @@ impl Launcher {
                 tr("Game"),
                 Some(
                     div()
-                        .child(if self.settings.dev_offline || account::client_id().is_none() {
+                        .child(if self.settings.dev_offline || account::sign_in_refused() {
                             trf(
                                 "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline. With no copy yet, install Java Edition with the official launcher first.",
                                 &[("version", &java.minecraft)],
@@ -3789,12 +3789,15 @@ impl Launcher {
                 &t,
             ));
         }
-        let configured = account::client_id().is_some();
+        // No client ID, or one Microsoft refused: there is no sign-in to offer (see
+        // `account::sign_in_refused`), so the row says which it is and points at offline play.
+        let configured = !account::sign_in_refused();
         let busy = matches!(
             self.sign_in_state,
             Some(SignInState::Starting | SignInState::Code(_) | SignInState::Working(_))
         );
         let detail = match &self.sign_in_state {
+            _ if !configured && account::refused() => div().child(tr(account::REFUSED_LINE)),
             _ if !configured => div().child(tr(account::NOT_CONFIGURED)),
             Some(SignInState::Starting) => div().child(tr("Asking Microsoft…")),
             Some(SignInState::Working(phase)) => div().child(tr(phase.label())),

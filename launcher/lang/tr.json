@@ -666,5 +666,7 @@
   "Play offline as the game's own name": "Oyunun kendi adıyla çevrimdışı oyna",
   "This build has no Microsoft sign-in, so it plays offline only.": "Bu derlemede Microsoft oturum açma yok, yalnızca çevrimdışı oynar.",
   "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.": "Çevrimdışı dünyalar ve sunucular çalışır. Çevrimiçi sunucular oturum açmış hesap ister.",
-  "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline. With no copy yet, install Java Edition with the official launcher first.": "Oyna, Minecraft {version} sürümünü bu PC'deki kopyadan (Horizon'un ya da başka bir başlatıcının) çevrimdışı başlatır. Henüz kopya yoksa önce Java Edition'ı resmî başlatıcıyla kurun."
+  "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline. With no copy yet, install Java Edition with the official launcher first.": "Oyna, Minecraft {version} sürümünü bu PC'deki kopyadan (Horizon'un ya da başka bir başlatıcının) çevrimdışı başlatır. Henüz kopya yoksa önce Java Edition'ı resmî başlatıcıyla kurun.",
+  "Microsoft refused this launcher's app registration, so it cannot sign in: it plays offline.": "Microsoft bu başlatıcının uygulama kaydını reddetti, bu yüzden oturum açamıyor: çevrimdışı oynar.",
+  "Microsoft refused this launcher's app registration, so signing in fails.": "Microsoft bu başlatıcının uygulama kaydını reddetti, bu yüzden oturum açma başarısız oluyor."
 }

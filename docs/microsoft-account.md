@@ -11,8 +11,9 @@ register.
 Nothing below can be done by an agent: the app registrations belong to Ludovic. Release builds
 have the client ID (the `HORIZON_MSA_CLIENT_ID` repository variable).
 
-A build **without** it cannot sign in, so it plays offline only, as other launchers' offline mode
-does: Play starts the game as an offline name (the one the quick switch shows, else the game's own
+A build **without** it cannot sign in, and neither can one whose client ID Microsoft **refuses**
+(`invalid_client`, kept in the data folder as `sign-in-refused.txt`): both play offline only, as
+other launchers' offline mode does: Play starts the game as an offline name (the one the quick switch shows, else the game's own
 name, with the UUID an offline-mode server makes for it), the gate's screen says that instead of
 offering a sign-in that cannot work, and the switch that lets offline names play without an owner
 (`backend::Settings::dev_offline`) is left on for good. Offline-mode worlds and servers work;
@@ -20,6 +21,9 @@ online-mode servers refuse the name. Nothing is downloaded this way — fetching
 Mojang still takes an owner — so Play starts the game from the copy already on the PC
 (`backend::java_minecraft`: Horizon's own folder, else the one chosen in the launcher, else any
 launcher's, its files read where they are), and a version that is nowhere says how to get one.
+A refused registration is recorded once so the window says `Microsoft refused this launcher's app
+registration` instead of offering a sign-in that fails every time; a build whose registration
+answers again, or a different `HORIZON_MSA_CLIENT_ID`, clears the note.
 
 A loader is the one exception: Horizon installs Fabric in its own folder only, never into another
 launcher's Minecraft, so a modded instance plays the loader profile that folder has (`java_game`);

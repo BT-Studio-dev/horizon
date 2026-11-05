@@ -1596,7 +1596,7 @@ fn java_minecraft(
     let version = listed.find(id)?;
     download_version_for_owner(&version.id, &version.sha1, log).map_err(|e| {
         format!(
-            "{e}\n\nThis build cannot sign in to Microsoft, so it cannot download Minecraft {id} \
+            "{e}\n\nThis launcher cannot sign in to Microsoft, so it cannot download Minecraft {id} \
              for you. Install Minecraft {id} on this PC with the official Minecraft launcher (or \
              Prism, MultiMC, the Modrinth App), play it once there so the download finishes, then \
              Play here: Horizon starts the game from those files, offline."
@@ -1934,7 +1934,7 @@ fn download_for(
         // A build without a Microsoft client ID (HORIZON_MSA_CLIENT_ID) cannot sign in at
         // all, so sending the player to sign in is a dead end: their own install is the
         // only source of the game files.
-        Err(_) if account::client_id().is_none() => Err(format!(
+        Err(_) if account::sign_in_refused() => Err(format!(
             "\n  • This build cannot sign in to Microsoft, so it cannot download {v} for you: \
              put Minecraft {v} on this PC with a launcher that runs on it, or copy a Minecraft \
              {v} install — its versions, libraries and assets folders — from another PC into \
