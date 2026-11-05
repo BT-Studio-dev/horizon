@@ -1632,9 +1632,9 @@ pub fn java_game(
                      there.",
                     game.minecraft,
                     minecraft.display(),
+                    loader.version,
                     own.display(),
                     name = loader.kind.name(),
-                    loader = loader.version,
                 ));
             }
             start = crate::loaders::install(loader, &game.minecraft, &minecraft, &get_bytes, log)?;
