@@ -417,9 +417,8 @@ fn an_offline_name_gets_the_uuid_a_server_makes_for_it() {
     // OfflinePlayer:Alex, as vanilla's server hashes it (UUID.nameUUIDFromBytes, version 3).
     let alex = offline_player("Alex").unwrap();
     assert_eq!(alex.name, "Alex");
-    assert_eq!(alex.uuid, horizon_protocol::crypto::uuid_string(
-        horizon_protocol::crypto::offline_uuid("Alex")
-    ));
+    let uuid = horizon_protocol::crypto::offline_uuid("Alex");
+    assert_eq!(alex.uuid, horizon_protocol::crypto::uuid_string(uuid));
     // No session: the name is checked against one, and nobody signed this one in.
     assert_eq!((alex.token.as_str(), alex.xuid.as_str()), ("", ""));
     // What `account::valid_offline_name` accepts, and nothing else.
