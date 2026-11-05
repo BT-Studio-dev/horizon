@@ -661,5 +661,9 @@
   "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Yenilenen oturum anahtar zincirine kaydedilemedi. Kilidini açıp tekrar deneyin.",
   "Another account operation is running. Try again in a moment.": "Başka bir hesap işlemi sürüyor. Birazdan tekrar deneyin.",
   "Built on {base}": "{base} üzerinde derlendi",
-  "Native mod builds": "Yerel mod derlemeleri"
+  "Native mod builds": "Yerel mod derlemeleri",
+  "Play offline as {name}": "Çevrimdışı {name} olarak oyna",
+  "Play offline as the game's own name": "Oyunun kendi adıyla çevrimdışı oyna",
+  "This build has no Microsoft sign-in, so it plays offline only.": "Bu derlemede Microsoft oturum açma yok, yalnızca çevrimdışı oynar.",
+  "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.": "Çevrimdışı dünyalar ve sunucular çalışır. Çevrimiçi sunucular oturum açmış hesap ister."
 }

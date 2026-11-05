@@ -661,5 +661,9 @@
   "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Не вдалося зберегти оновлений вхід у в'язці ключів. Розблокуйте її та повторіть.",
   "Another account operation is running. Try again in a moment.": "Виконується інша операція з обліковим записом. Спробуйте ще раз за мить.",
   "Built on {base}": "Зібрано на {base}",
-  "Native mod builds": "Збірки з нативними модами"
+  "Native mod builds": "Збірки з нативними модами",
+  "Play offline as {name}": "Грати офлайн як {name}",
+  "Play offline as the game's own name": "Грати офлайн з іменем гри",
+  "This build has no Microsoft sign-in, so it plays offline only.": "У цій збірці немає входу через Microsoft, тому вона грає лише офлайн.",
+  "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.": "Світи й сервери в офлайн-режимі працюють. Для онлайн-серверів потрібен вхід в акаунт."
 }

@@ -661,5 +661,9 @@
   "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "无法将续期后的登录信息保存到钥匙串。请解锁后重试。",
   "Another account operation is running. Try again in a moment.": "另一个账户操作正在进行。请稍后重试。",
   "Built on {base}": "基于 {base} 构建",
-  "Native mod builds": "原生模组构建"
+  "Native mod builds": "原生模组构建",
+  "Play offline as {name}": "以 {name} 身份离线游戏",
+  "Play offline as the game's own name": "以游戏自带名称离线游戏",
+  "This build has no Microsoft sign-in, so it plays offline only.": "此版本没有 Microsoft 登录，只能离线游戏。",
+  "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.": "离线模式的世界和服务器可用；在线服务器需要已登录的账号。"
 }

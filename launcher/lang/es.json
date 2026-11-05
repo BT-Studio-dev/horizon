@@ -661,5 +661,9 @@
   "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "No se pudo guardar el inicio de sesión renovado en el llavero. Desbloquéalo y vuelve a intentarlo.",
   "Another account operation is running. Try again in a moment.": "Hay otra operación de cuenta en curso. Vuelve a intentarlo en un momento.",
   "Built on {base}": "Compilado sobre {base}",
-  "Native mod builds": "Compilaciones con mods nativos"
+  "Native mod builds": "Compilaciones con mods nativos",
+  "Play offline as {name}": "Jugar sin conexión como {name}",
+  "Play offline as the game's own name": "Jugar sin conexión con el nombre del juego",
+  "This build has no Microsoft sign-in, so it plays offline only.": "Esta versión no tiene inicio de sesión de Microsoft, así que solo juega sin conexión.",
+  "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.": "Los mundos y servidores sin conexión funcionan. Los servidores online necesitan una cuenta."
 }
