@@ -19271,22 +19271,20 @@ fn start_game<'a>(
     // only graphics is that one gets a sentence saying so, once, instead of
     // a frame rate that looks broken. Nothing for a server, a scripted run or
     // a window nobody is watching.
-    if game.renderer.as_ref().is_some_and(|r| {
-        r.info.device_type == wgpu::DeviceType::Cpu
-            && game.options.execution_role.is_client()
-            && !game.options.offscreen
-            && game.options.control.is_none()
-            && !synchronous_startup(&game.options)
-    }) {
-        let name = game
-            .renderer
-            .as_ref()
-            .map_or_else(String::new, |r| r.info.name.clone());
+    let software = game
+        .renderer
+        .as_ref()
+        .filter(|r| r.info.device_type == wgpu::DeviceType::Cpu)
+        .map(|r| r.info.name.clone());
+    if let Some(name) = software
+        && game.options.execution_role.is_client()
+        && !game.options.offscreen
+        && game.options.control.is_none()
+        && !synchronous_startup(&game.options)
+    {
         log::info!("Horizon: drawing on the processor ({name}); no GPU adapter was usable");
-        game.system_message(horizon_client::text::Text::translate(
-            "horizon.softwareRenderer",
-            &[&name],
-        ));
+        let line = horizon_client::text::Text::tr("horizon.softwareRenderer", &[&name]);
+        game.system_message(line);
     }
     if let Some(scenario) = game.options.benchmark.clone() {
         let control = game
