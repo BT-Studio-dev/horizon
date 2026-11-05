@@ -1621,7 +1621,7 @@ pub fn java_game(
     // owner to fetch it, a version already on disk (Horizon's, or another launcher's, borrowed)
     // plays past the gate's refusals, as offline as its own files allow.
     let own = data_dir().join("minecraft");
-    let minecraft = java_minecraft(&game.minecraft, log)?;
+    let minecraft = java_minecraft(&game.minecraft, game.loader.as_ref(), log)?;
     let mut start = game.minecraft.clone();
     if let Some(loader) = &game.loader {
         start = loader.kind.profile_id(&loader.version, &game.minecraft);
