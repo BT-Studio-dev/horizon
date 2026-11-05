@@ -8,9 +8,17 @@ register.
 
 ## What Ludovic registers (needs his accounts)
 
-Nothing below can be done by an agent: the app registrations belong to Ludovic. A build without
-the client ID can't sign in, so its launcher can't start the game ("This build of the launcher has
-no Microsoft sign-in"); release builds have it.
+Nothing below can be done by an agent: the app registrations belong to Ludovic. Release builds
+have the client ID (the `HORIZON_MSA_CLIENT_ID` repository variable).
+
+A build **without** it cannot sign in, so it plays offline only, as other launchers' offline mode
+does: Play starts the game as an offline name (the one the quick switch shows, else the game's own
+name, with the UUID an offline-mode server makes for it), the gate's screen says that instead of
+offering a sign-in that cannot work, and the switch that lets offline names play without an owner
+(`backend::Settings::dev_offline`) is left on for good. Offline-mode worlds and servers work;
+online-mode servers refuse the name. Nothing is downloaded this way — fetching Minecraft from
+Mojang still takes an owner — so a version that is not on disk yet says how to bring one
+(`horizon-launcher::backend::java_game`).
 
 1. **Azure app registration** (https://portal.azure.com → Microsoft Entra ID → App registrations →
    New registration):
@@ -90,6 +98,9 @@ possible; the launcher just doesn't offer it on its own.
   without a session, offline. An answer of "doesn't own" (or no profile) blocks at once.
 - **Offline names play behind an owner.** They can be added and played only while an owning
   account is signed in. Signing the last one out keeps them, and they play again once one is back.
+- **A build that cannot sign in is the exception.** With no client ID there is no owner it could
+  ever ask for, so Play goes through `java_launch::offline_player` instead of answering the gate,
+  and a Java instance already on disk starts offline (`account::java_player`).
 - **Who isn't affected:** the game binary itself (`horizon-client`, `horizon-ctl launch`, the
   harnesses, CI), the dedicated server and `horizon-server`, the website. There is no bypass flag:
   the launcher's tests use accounts in a memory store (`MemoryStore`, and `HORIZON_NO_KEYCHAIN`

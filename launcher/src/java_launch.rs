@@ -28,6 +28,25 @@ impl std::fmt::Debug for Player {
     }
 }
 
+/// The player of an offline name: what vanilla gives a game started without a Microsoft
+/// session (`--name`), on an offline-mode world or server. The UUID is the one such a server
+/// makes for the name (`UUID.nameUUIDFromBytes("OfflinePlayer:" + name)`), so the same name is
+/// the same player there; Minecraft checks the name against the session, and an offline name
+/// that nobody signed in has no session.
+pub fn offline_player(name: &str) -> Result<Player, String> {
+    if !crate::account::valid_offline_name(name) {
+        return Err(format!(
+            "{name}: an offline name is 3 to 16 letters, digits or _"
+        ));
+    }
+    Ok(Player {
+        name: name.to_owned(),
+        uuid: horizon_protocol::crypto::uuid_string(horizon_protocol::crypto::offline_uuid(name)),
+        token: String::new(),
+        xuid: String::new(),
+    })
+}
+
 /// Everything the command needs besides the version JSON.
 pub struct Launch<'a> {
     /// Holds `versions/`, `libraries/`, `assets/`.

@@ -33,6 +33,8 @@ const NO_PROFILE: &str =
 const OTHER_PROFILE: &str =
     "The Microsoft account now has another Minecraft profile. Sign in again.";
 const SIGN_IN_AGAIN: &str = "Your Microsoft sign-in expired. Sign in again.";
+/// The name the game makes up for itself with no name to play under (`Player::GameName`).
+const PLAYER_NAME: &str = "Player";
 /// The Minecraft token is renewed when it has less than this left.
 const RENEW_BEFORE: u64 = 3600;
 
@@ -2087,9 +2089,13 @@ fn session_file(game_home: &Path, pass: Launch) -> (Option<PathBuf>, Option<Stri
 /// ([`launch`]): the selected account when it owns the game, else one that does. With no answer
 /// from the services, an account that owned it plays with its last token. Mojang's game takes the
 /// token on its command line, as Mojang's launcher gives it; that command is never logged.
+///
+/// A build without a Microsoft client ID can never answer that gate, so it does not ask: the
+/// offline name the window shows plays, like every other launcher's offline mode, and the game
+/// gets no session (see `java_launch::offline_player`).
 pub fn java_player() -> Result<crate::java_launch::Player, String> {
     let mut accounts = Accounts::load();
-    let player = java_player_with(
+    let player = offline_fallback(
         &Endpoints::live(),
         client_id().as_deref(),
         store(),
@@ -2097,6 +2103,25 @@ pub fn java_player() -> Result<crate::java_launch::Player, String> {
     );
     let _ = accounts.save();
     player
+}
+
+fn offline_fallback(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    store: &dyn SecretStore,
+    accounts: &mut Accounts,
+) -> Result<crate::java_launch::Player, String> {
+    match java_player_with(ep, client_id, store, accounts) {
+        Ok(player) => Ok(player),
+        Err(refused) if client_id.is_none() => match &accounts.player() {
+            // A Microsoft account's name is its own; an offline name's letters may not be
+            // the game's idea of one, so it is checked before it is used.
+            Player::Microsoft(_) => Err(refused),
+            Player::Offline(name) => crate::java_launch::offline_player(name)?,
+            Player::GameName => crate::java_launch::offline_player(PLAYER_NAME)?,
+        },
+        Err(refused) => Err(refused),
+    }
 }
 
 fn java_player_with(

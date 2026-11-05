@@ -1524,7 +1524,9 @@ pub fn java_game(
             instance.name
         )
     })?;
-    let player = account::java_player()?;
+    // The gate comes after the download: a version the launcher has not fetched yet needs an
+    // owner to fetch it, and a version already on disk (from here or another launcher) plays
+    // past the gate's refusals, as offline as its own files allow.
     let minecraft = data_dir().join("minecraft");
     let id = mojang::relative(&game.minecraft)?;
     let natives = minecraft.join("natives").join(&id);
@@ -1539,7 +1541,19 @@ pub fn java_game(
     if !marker.is_file() {
         let listed = crate::minecraft_versions::load()?;
         let version = listed.find(&game.minecraft)?;
-        download_version_for_owner(&version.id, &version.sha1, log)?;
+        download_version_for_owner(&version.id, &version.sha1, log).map_err(|e| {
+            if account::client_id().is_some() {
+                e
+            } else {
+                format!(
+                    "{e}\n\nThis build cannot sign in to Microsoft, so it cannot download \
+                     Minecraft {v}: put a Minecraft {v} install (its versions, libraries and \
+                     assets folders) on this PC's launcher, or point the instance's Game folder \
+                     at one a launcher on this PC made. Then Play uses those files offline.",
+                    v = game.minecraft
+                )
+            }
+        })?;
         fs::write(&marker, "").map_err(|e| format!("{}: {e}", marker.display()))?;
     }
     let mut start = game.minecraft.clone();
@@ -1551,6 +1565,7 @@ pub fn java_game(
             fs::write(downloaded(&start)?, "").map_err(|e| e.to_string())?;
         }
     }
+    let player = account::java_player()?;
     let file = minecraft
         .join("versions")
         .join(mojang::relative(&start)?)

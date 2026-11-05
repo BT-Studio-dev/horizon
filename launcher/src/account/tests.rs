@@ -1083,6 +1083,43 @@ fn the_java_edition_plays_as_an_owner_even_offline() {
     );
 }
 
+#[test]
+fn a_build_that_cannot_sign_in_plays_as_the_offline_name() {
+    // No client ID: the gate could never be answered, so the offline name the switch shows
+    // plays, with the UUID an offline-mode server makes for it.
+    let store = MemoryStore::default();
+    let mut accounts = Accounts::default();
+    accounts.add_offline("Builder_1").unwrap();
+    accounts.offline_selected = Some("Builder_1".into());
+    let player = offline_fallback(&offline(), None, &store, &mut accounts).unwrap();
+    assert_eq!(player.name, "Builder_1");
+    assert_eq!(
+        player.uuid,
+        horizon_protocol::crypto::uuid_string(horizon_protocol::crypto::offline_uuid("Builder_1"))
+    );
+    assert_eq!(player.token, "");
+    // With no name picked, the game's own name.
+    accounts.offline_selected = None;
+    let player = offline_fallback(&offline(), None, &store, &mut accounts).unwrap();
+    assert_eq!(player.name, "Player");
+    // A Microsoft account is not an offline name: it plays with its session or not at all.
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("mc-token", false));
+    assert_eq!(
+        offline_fallback(&offline(), None, &store, &mut accounts).unwrap_err(),
+        NoOwner.to_string()
+    );
+    // A configured build keeps the gate exactly as it was.
+    let store = MemoryStore::default();
+    let mut accounts = Accounts::default();
+    accounts.add_offline("Builder_1").unwrap();
+    accounts.offline_selected = Some("Builder_1".into());
+    assert_eq!(
+        offline_fallback(&offline(), Some("test-client"), &store, &mut accounts).unwrap_err(),
+        NoOwner.to_string()
+    );
+}
+
 /// A secrets file of the test's own, gone first.
 fn secrets_file(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("horizon-secrets-{name}-{}", std::process::id()));

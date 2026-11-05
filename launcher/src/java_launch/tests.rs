@@ -411,3 +411,19 @@ fn server_addresses_split_into_host_and_port() {
         ("mc.example.org:x", 25565)
     );
 }
+
+#[test]
+fn an_offline_name_gets_the_uuid_a_server_makes_for_it() {
+    // OfflinePlayer:Alex, as vanilla's server hashes it (UUID.nameUUIDFromBytes, version 3).
+    let alex = offline_player("Alex").unwrap();
+    assert_eq!(alex.name, "Alex");
+    assert_eq!(alex.uuid, horizon_protocol::crypto::uuid_string(
+        horizon_protocol::crypto::offline_uuid("Alex")
+    ));
+    // No session: the name is checked against one, and nobody signed this one in.
+    assert_eq!((alex.token.as_str(), alex.xuid.as_str()), ("", ""));
+    // What `account::valid_offline_name` accepts, and nothing else.
+    assert!(offline_player("Builder_1").is_ok());
+    assert!(offline_player("ab").is_err());
+    assert!(offline_player("a name").is_err());
+}

@@ -906,6 +906,22 @@ impl Launcher {
                         let mut cmd = backend::client_command(&tag);
                         let (file, offline) = match session {
                             Ok(pass) => pass,
+                            // A build with no Microsoft sign-in cannot ask for an owner, so
+                            // Play is offline from the first press: offline-mode worlds and
+                            // servers work, an online-mode server refuses the name, and the
+                            // window says so instead of asking for a sign-in it cannot offer.
+                            Err(account::NoOwner) if account::client_id().is_none() => {
+                                self.settings.dev_offline = true;
+                                self.settings.save();
+                                self.client_error = Some(
+                                    "Playing offline: this build has no Microsoft sign-in, so \
+                                     online-mode servers will refuse this name. Offline-mode \
+                                     worlds and servers work."
+                                        .into(),
+                                );
+                                account::session_for_game(&backend::game_home(), true)
+                                    .unwrap_or((None, None))
+                            }
                             Err(account::NoOwner) => {
                                 self.owner = Some(false);
                                 self.owner_screen_open = true;

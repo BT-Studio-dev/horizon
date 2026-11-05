@@ -2080,31 +2080,24 @@ mod tests {
         // The renderer's own floor is 25% (`world_post`'s clamp), so the
         // slider and the file reach it: a CPU rasterizer gains most there.
         let mut s = Settings::default();
-        let item = Item::Horizon(H::ResolutionScale);
-        let steps = H::ResolutionScale.slider_steps().expect("steps defined");
-        item.set_slider(&mut s, 0.0);
+        let h = H::ResolutionScale;
+        let steps = h.slider_steps().expect("steps defined");
+        h.set_slider(&mut s, 0.0);
         assert_eq!(s.horizon.resolution_scale, 25);
-        item.set_slider(&mut s, 1.0);
+        h.set_slider(&mut s, 1.0);
         assert_eq!(s.horizon.resolution_scale, 200);
         // Every step is a whole 5%, from one end to the other.
         for i in 0..=steps {
-            item.set_slider(&mut s, i as f32 / steps as f32);
+            h.set_slider(&mut s, i as f32 / steps as f32);
             assert_eq!(s.horizon.resolution_scale % 5, 0, "{i}");
-            assert_eq!(
-                item.slider(&s),
-                Some((s.horizon.resolution_scale as f32 - 25.0) / 175.0)
-            );
+            let pos = (s.horizon.resolution_scale as f32 - 25.0) / 175.0;
+            assert_eq!(h.slider(&s), Some(pos));
         }
-        use crate::graphics::Graphics;
-        assert_eq!(
-            Graphics::parse("resolutionScale:25\n").resolution_scale,
-            25
-        );
-        assert_eq!(Graphics::parse("resolutionScale:1\n").resolution_scale, 25);
-        assert_eq!(
-            Graphics::parse("resolutionScale:400\n").resolution_scale,
-            200
-        );
+        // The file clamps to the same ends.
+        let of = |text| crate::graphics::Graphics::parse(text).resolution_scale;
+        assert_eq!(of("resolutionScale:25\n"), 25);
+        assert_eq!(of("resolutionScale:1\n"), 25);
+        assert_eq!(of("resolutionScale:400\n"), 200);
     }
 
     #[test]

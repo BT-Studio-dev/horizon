@@ -39,13 +39,37 @@ impl Launcher {
         }
     }
 
+    /// The way out of a build that cannot sign in: play offline, which is what every
+    /// launcher's offline mode does. The switch stays on, so Play does not ask again
+    /// (`backend::Settings::dev_offline`); nothing is downloaded with it on, because that still
+    /// takes an owner (`backend::download_for_owner`).
     #[rustfmt::skip]
-    fn offline_without_account_action(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn play_offline_action(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        // Named as what will play: the offline name the switch shows, or the game's own
+        // name (a Microsoft account is not one, so it is left for the game's).
+        let label = match self.accounts.player() {
+            account::Player::Offline(name) => {
+                trf("Play offline as {name}", &[("name", name.as_str())])
+            }
+            _ => tr("Play offline as the game's own name").to_string(),
+        };
         shell::action("owner-offline", shell::Action::Main, &self.theme)
-            .child(shell::label(tr("Offline names without an account").to_string()))
+            .child(shell::label(label))
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.settings.dev_offline = true;
                 this.settings.save();
+                // A Microsoft account plays with a session or not at all, and none here can
+                // sign in: the game's own name is who plays.
+                if matches!(this.accounts.player(), account::Player::Microsoft(_)) {
+                    let mut accounts = Accounts::load();
+                    if accounts
+                        .play_as_with(account::store(), account::Player::GameName, true)
+                        .is_ok()
+                    {
+                        let _ = accounts.save();
+                        this.accounts = accounts;
+                    }
+                }
                 this.close_owner_screen();
                 cx.notify();
             }))
@@ -85,14 +109,28 @@ impl Launcher {
                     .mb(px(4.))
                     .child(tr("Sign in to play").to_string()),
             )
-            .child(line(
-                "Horizon needs a Microsoft account that owns Minecraft: Java Edition, like other launchers.",
-                n.ink_soft,
-            ))
-            .child(line(
-                "No Minecraft install needed: Horizon downloads it from Mojang for your account.",
-                n.ink_soft,
-            ))
+            .child(if configured {
+                line(
+                    "Horizon needs a Microsoft account that owns Minecraft: Java Edition, like other launchers.",
+                    n.ink_soft,
+                )
+            } else {
+                line(
+                    "This build has no Microsoft sign-in, so it plays offline only.",
+                    n.ink_soft,
+                )
+            })
+            .child(if configured {
+                line(
+                    "No Minecraft install needed: Horizon downloads it from Mojang for your account.",
+                    n.ink_soft,
+                )
+            } else {
+                line(
+                    "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.",
+                    n.ink_soft,
+                )
+            })
             .child(line(
                 "Your worlds, offline names and settings stay where they are.",
                 n.muted,
@@ -173,7 +211,7 @@ impl Launcher {
                 )
             }
             Shown::Starting(_) => None,
-            Shown::Error(_) if !configured => Some(self.offline_without_account_action(cx)),
+            Shown::Error(_) if !configured => Some(self.play_offline_action(cx)),
             _ => Some(
                 microsoft::sign_in_button("owner-sign-in", &t).on_click(cx.listener(
                     |this, _: &ClickEvent, _, cx| {

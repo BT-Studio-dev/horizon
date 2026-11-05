@@ -589,12 +589,10 @@ impl Game<'_> {
             ThrottleReason::LongAfk => Some("idle"),
             ThrottleReason::ShortAfk => Some("idle (short)"),
             ThrottleReason::OutOfLevelMenu => Some("menu"),
-        }
-        .filter(|_| limit < option);
-        let battery = self
-            .settings
-            .horizon
-            .battery_limit(limit, self.title.is_none(), self.focused);
+        };
+        let throttled = throttled.filter(|_| limit < option);
+        let horizon = &self.settings.horizon;
+        let battery = horizon.battery_limit(limit, self.title.is_none(), self.focused);
         // Horizon's own cap, when it is the tighter one.
         let why = throttled.or_else(|| (battery < limit).then_some("battery"));
         (battery, why)
