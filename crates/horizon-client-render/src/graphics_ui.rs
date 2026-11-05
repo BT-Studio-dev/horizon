@@ -499,7 +499,7 @@ impl H {
                 Some(i as f32 / (LOD_STEPS.len() - 1) as f32)
             }
             H::Workers => Some(g.workers as f32 / max_workers() as f32),
-            H::ResolutionScale => Some((g.resolution_scale as f32 - 50.0) / 150.0),
+            H::ResolutionScale => Some((g.resolution_scale as f32 - 25.0) / 175.0),
             // Auto, then 10..480 by 10.
             H::HdrPaperWhite => Some(g.hdr_paper_white as f32 / 480.0),
             // Auto, then 200..2000 by 50.
@@ -517,7 +517,7 @@ impl H {
             H::ChunkUpdates => Some(64),
             H::UploadBudget => Some((UPLOAD_STEPS.len() - 1) as u32),
             H::Workers => Some(max_workers()),
-            H::ResolutionScale => Some(30),
+            H::ResolutionScale => Some(35),
             H::HdrPaperWhite => Some(41),
             H::HdrPeak => Some(37),
             H::HdrBlackLevel => Some(100),
@@ -638,7 +638,7 @@ impl H {
                 g.lod_distance = LOD_STEPS[(v * (LOD_STEPS.len() - 1) as f32).round() as usize]
             }
             H::Workers => g.workers = (v * max_workers() as f32).round() as u32,
-            H::ResolutionScale => g.resolution_scale = (50.0 + (v * 30.0).round() * 5.0) as u32,
+            H::ResolutionScale => g.resolution_scale = (25.0 + (v * 35.0).round() * 5.0) as u32,
             H::HdrPaperWhite => g.hdr_paper_white = (v * 48.0).round() as u32 * 10,
             H::HdrPeak => {
                 g.hdr_peak = match (v * 37.0).round() as u32 {
@@ -2073,6 +2073,38 @@ mod tests {
         assert!(actions.is_empty());
         assert_eq!(s.horizon.chunk_updates, 16);
         assert!(ui.scroll.amount > scroll_before);
+    }
+
+    #[test]
+    fn resolution_scale_reaches_a_quarter_for_software_rendering() {
+        // The renderer's own floor is 25% (`world_post`'s clamp), so the
+        // slider and the file reach it: a CPU rasterizer gains most there.
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::ResolutionScale);
+        let steps = H::ResolutionScale.slider_steps().expect("steps defined");
+        item.set_slider(&mut s, 0.0);
+        assert_eq!(s.horizon.resolution_scale, 25);
+        item.set_slider(&mut s, 1.0);
+        assert_eq!(s.horizon.resolution_scale, 200);
+        // Every step is a whole 5%, from one end to the other.
+        for i in 0..=steps {
+            item.set_slider(&mut s, i as f32 / steps as f32);
+            assert_eq!(s.horizon.resolution_scale % 5, 0, "{i}");
+            assert_eq!(
+                item.slider(&s),
+                Some((s.horizon.resolution_scale as f32 - 25.0) / 175.0)
+            );
+        }
+        use crate::graphics::Graphics;
+        assert_eq!(
+            Graphics::parse("resolutionScale:25\n").resolution_scale,
+            25
+        );
+        assert_eq!(Graphics::parse("resolutionScale:1\n").resolution_scale, 25);
+        assert_eq!(
+            Graphics::parse("resolutionScale:400\n").resolution_scale,
+            200
+        );
     }
 
     #[test]

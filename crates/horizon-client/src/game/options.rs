@@ -548,6 +548,14 @@ impl Game<'_> {
     /// `FramerateLimitTracker.getFramerateLimit`: the Max Framerate option,
     /// throttled when minimised, idle, or in a menu without a world.
     pub(super) fn framerate_limit(&self) -> i32 {
+        let (limit, _) = self.frame_limit_and_why();
+        limit
+    }
+    /// The frame cap and what set it: the player's Max Framerate, or the
+    /// throttle that did (`FramerateLimitTracker`'s reason), or Horizon's
+    /// Battery Saver, so a cap the player did not ask for can be told apart
+    /// from a slow frame on F3.
+    pub(super) fn frame_limit_and_why(&self) -> (i32, Option<&'static str>) {
         let context = FrameContext {
             inactivity: if self.settings.inactivity_fps_limit == "minimized" {
                 InactivityFpsLimit::Minimized
@@ -570,10 +578,26 @@ impl Game<'_> {
             has_screen: self.title.is_some() || self.screen != super::Screen::Playing,
             has_overlay: false,
         };
-        let limit = framerate_limit(self.settings.max_fps as i32, context);
-        self.settings
+        use horizon_client::window::{ThrottleReason, throttle_reason};
+        let option = self.settings.max_fps as i32;
+        let limit = framerate_limit(option, context);
+        // Vanilla lower: the throttle that made the cap. Told apart from the
+        // player's own Max Framerate so F3 can name it.
+        let throttled = match throttle_reason(context) {
+            ThrottleReason::None => None,
+            ThrottleReason::WindowIconified => Some("minimized"),
+            ThrottleReason::LongAfk => Some("idle"),
+            ThrottleReason::ShortAfk => Some("idle (short)"),
+            ThrottleReason::OutOfLevelMenu => Some("menu"),
+        }
+        .filter(|_| limit < option);
+        let battery = self
+            .settings
             .horizon
-            .battery_limit(limit, self.title.is_none(), self.focused)
+            .battery_limit(limit, self.title.is_none(), self.focused);
+        // Horizon's own cap, when it is the tighter one.
+        let why = throttled.or_else(|| (battery < limit).then_some("battery"));
+        (battery, why)
     }
     /// `Minecraft.runTick`'s frame limiter: `FramerateLimiter.limitDisplayFPS`
     /// below 260 frames per second, sleeping then spin-waiting until the

@@ -342,9 +342,13 @@ impl Game<'_> {
         }
         hud_layout::paint(batch, atlas, &draws);
     }
-    /// `DebugEntryFps`.
+    /// `DebugEntryFps`, plus what is capping the frames when it is not the
+    /// player's own Max Framerate: the throttle that did (`FramerateLimitTracker`'s
+    /// reason) or Horizon's Battery Saver. A frame rate pinned at 10 is either
+    /// a cap named here or the machine, and F3 says which.
     pub(super) fn debug_fps_line(&self, d: &mut debug_overlay::Displayer) {
-        let limit = self.framerate_limit();
+        let (limit, capped_by) = self.frame_limit_and_why();
+        let capped_by = capped_by.map_or(String::new(), |why| format!(" [{why}]"));
         let present = self
             .renderer
             .as_ref()
@@ -364,13 +368,14 @@ impl Game<'_> {
                 debug_overlay::refresh_rate_label(f64::from(mhz) / 1000.0)
             });
         d.priority(format!(
-            "{} fps T: {}{present} @{refresh}Hz",
+            "{} fps T: {}{}{present} @{refresh}Hz",
             self.fps.round() as i32,
             if limit == 260 {
                 "inf".into()
             } else {
                 limit.to_string()
             },
+            capped_by,
         ));
     }
     /// `DebugEntrySimplePerformanceImpactors`.

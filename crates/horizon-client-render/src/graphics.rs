@@ -532,7 +532,7 @@ pub struct Graphics {
     /// Chunk worker threads; 0 uses every core but one. Applies at the next start.
     pub workers: u32,
     pub overlay: Overlay,
-    /// World resolution as a percentage of the window's (50..=200).
+    /// World resolution as a percentage of the window's (25..=200).
     pub resolution_scale: u32,
     /// FXAA over the world.
     pub fxaa: bool,
@@ -676,7 +676,7 @@ impl Graphics {
                     }
                 }
                 "workers" => g.workers = number(g.workers).min(64),
-                "resolutionScale" => g.resolution_scale = number(g.resolution_scale).clamp(50, 200),
+                "resolutionScale" => g.resolution_scale = number(g.resolution_scale).clamp(25, 200),
                 "fxaa" => g.fxaa = flag(g.fxaa),
                 "taa" => g.taa = flag(g.taa),
                 "upscaling" => g.upscaling = Upscaling::parse(value),

@@ -19267,6 +19267,27 @@ fn start_game<'a>(
         game.start_mods();
     }
     game.start_agent_control()?;
+    // A software adapter (llvmpipe, WARP) draws on the CPU: a machine whose
+    // only graphics is that one gets a sentence saying so, once, instead of
+    // a frame rate that looks broken. Nothing for a server, a scripted run or
+    // a window nobody is watching.
+    if game.renderer.as_ref().is_some_and(|r| {
+        r.info.device_type == wgpu::DeviceType::Cpu
+            && game.options.execution_role.is_client()
+            && !game.options.offscreen
+            && game.options.control.is_none()
+            && !synchronous_startup(&game.options)
+    }) {
+        let name = game
+            .renderer
+            .as_ref()
+            .map_or_else(String::new, |r| r.info.name.clone());
+        log::info!("Horizon: drawing on the processor ({name}); no GPU adapter was usable");
+        game.system_message(horizon_client::text::Text::translate(
+            "horizon.softwareRenderer",
+            &[&name],
+        ));
+    }
     if let Some(scenario) = game.options.benchmark.clone() {
         let control = game
             .control
