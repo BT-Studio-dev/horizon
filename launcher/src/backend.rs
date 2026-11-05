@@ -5484,8 +5484,17 @@ pub fn {f}("
             || vec![empty.clone(), store.clone()],
             &log,
         );
+        // The five completions, each with what it copied: nothing was left out (`not added`)
+        // and nothing else is reported (another line from the machine's own folders must not
+        // make this fail).
+        let ready: Vec<String> = lines
+            .borrow()
+            .iter()
+            .filter(|line| line.ends_with("MB"))
+            .cloned()
+            .collect();
         assert_eq!(
-            *lines.borrow(),
+            ready,
             [
                 "Built-in pack assets ready: 2 files, 0.0 MB",
                 "Panorama assets ready: 7 files, 0.0 MB",
@@ -5493,6 +5502,11 @@ pub fn {f}("
                 "Language assets ready: 2 files, 0.0 MB",
                 "Sound assets ready: 1 files, 0.0 MB",
             ]
+        );
+        assert!(
+            !lines.borrow().iter().any(|line| line.contains("not added")),
+            "{:?}",
+            *lines.borrow()
         );
         for (name, data) in &assets {
             assert_eq!(asset("v0.2.1", name).as_ref(), Some(data), "{name}");
