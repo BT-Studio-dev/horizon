@@ -1519,7 +1519,7 @@ fn has_version(root: &Path, id: &str) -> Result<bool, String> {
 /// downloading it: the one chosen in the launcher, else Horizon's own, else any launcher's own
 /// (`minecraft_folders`, in its order). Files are read as they are, as Minecraft reads them;
 /// none is written to.
-fn installed(id: &str, log: &dyn Fn(String)) -> Option<PathBuf> {
+fn installed_minecraft(id: &str, log: &dyn Fn(String)) -> Option<PathBuf> {
     let linked = data_dir().join("linked-minecraft");
     let dir = minecraft_folders()
         .into_iter()
@@ -1534,9 +1534,9 @@ fn installed(id: &str, log: &dyn Fn(String)) -> Option<PathBuf> {
 
 /// Where an instance's version starts from: Horizon's own Minecraft folder when it has the
 /// version (game and loader profile), else the game another launcher installed on this PC
-/// (`installed`), else Mojang's download into Horizon's own folder — which takes an account
-/// that owns Minecraft. A build without a Microsoft client ID (this fork's releases) cannot
-/// sign in, so there it starts from the copy on the PC, or says how to get one.
+/// (`installed_minecraft`), else Mojang's download into Horizon's own folder — which takes an
+/// account that owns Minecraft. A build without a Microsoft client ID (this fork's releases)
+/// cannot sign in, so there it starts from the copy on the PC, or says how to get one.
 fn java_minecraft(
     id: &str,
     loader: Option<&crate::loaders::Loader>,
@@ -1563,14 +1563,14 @@ fn java_minecraft(
         match download_version_for_owner(&version.id, &version.sha1, log) {
             Ok(()) => return Ok(own),
             Err(e) => {
-                if let Some(dir) = installed(id, log) {
+                if let Some(dir) = installed_minecraft(id, log) {
                     return Ok(dir);
                 }
                 return Err(e);
             }
         }
     }
-    if let Some(dir) = installed(id, log) {
+    if let Some(dir) = installed_minecraft(id, log) {
         if profile
             .as_deref()
             .is_none_or(|p| has_version(&dir, p).unwrap_or(false))
