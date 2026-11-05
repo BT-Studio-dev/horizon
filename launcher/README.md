@@ -147,7 +147,9 @@ The opening, then Play ([clip](docs/opening.webm)):
   signing the last one out keeps them, unplayable until one is back. A build with no Microsoft
   sign-in configured can never sign one in, so it plays offline only: Play uses the offline name,
   with the UUID an offline-mode server makes for it, and says so in the window. It never downloads
-  Minecraft that way (that takes an owner), so the game files must already be on the PC. Settings > Account
+  Minecraft that way (that takes an owner), so Play starts the game from the copy on the PC
+  instead: Horizon's own Minecraft folder, the one chosen in the launcher, or another launcher's
+  (`backend::java_minecraft`), with the loader's profile from the same folder. Settings > Account
   adds offline names (3 to 16 letters, digits or `_`; the game gets `--name`) and forgets them,
   skin and cape files included, and rolls the game's made-up name for a new one; the Console's
   Share log takes the names out of the log too. `horizon-launcher account offline

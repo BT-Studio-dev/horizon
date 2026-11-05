@@ -2903,10 +2903,17 @@ impl Launcher {
                 tr("Game"),
                 Some(
                     div()
-                        .child(trf(
-                            "Minecraft {version} (Java Edition). Play downloads it from Mojang for your account the first time, with the Java it needs.",
-                            &[("version", &java.minecraft)],
-                        ))
+                        .child(if self.settings.dev_offline || account::client_id().is_none() {
+                            trf(
+                                "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline.",
+                                &[("version", &java.minecraft)],
+                            )
+                        } else {
+                            trf(
+                                "Minecraft {version} (Java Edition). Play downloads it from Mojang for your account the first time, with the Java it needs.",
+                                &[("version", &java.minecraft)],
+                            )
+                        })
                         .into_any_element(),
                 ),
                 None,

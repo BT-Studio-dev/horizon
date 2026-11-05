@@ -17,8 +17,9 @@ name, with the UUID an offline-mode server makes for it), the gate's screen says
 offering a sign-in that cannot work, and the switch that lets offline names play without an owner
 (`backend::Settings::dev_offline`) is left on for good. Offline-mode worlds and servers work;
 online-mode servers refuse the name. Nothing is downloaded this way — fetching Minecraft from
-Mojang still takes an owner — so a version that is not on disk yet says how to bring one
-(`horizon-launcher::backend::java_game`).
+Mojang still takes an owner — so Play starts the game from the copy already on the PC
+(`backend::java_minecraft`: Horizon's own folder, else the one chosen in the launcher, else any
+launcher's, its files read where they are), and a version that is nowhere says how to get one.
 
 1. **Azure app registration** (https://portal.azure.com → Microsoft Entra ID → App registrations →
    New registration):

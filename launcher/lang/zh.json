@@ -665,5 +665,6 @@
   "Play offline as {name}": "以 {name} 身份离线游戏",
   "Play offline as the game's own name": "以游戏自带名称离线游戏",
   "This build has no Microsoft sign-in, so it plays offline only.": "此版本没有 Microsoft 登录，只能离线游戏。",
-  "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.": "离线模式的世界和服务器可用；在线服务器需要已登录的账号。"
+  "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.": "离线模式的世界和服务器可用；在线服务器需要已登录的账号。",
+  "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline.": "「开始游戏」会从此电脑上的副本（Horizon 或其他启动器的）离线启动 Minecraft {version}。"
 }

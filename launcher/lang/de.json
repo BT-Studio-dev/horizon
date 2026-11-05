@@ -665,5 +665,6 @@
   "Play offline as {name}": "Offline spielen als {name}",
   "Play offline as the game's own name": "Offline unter dem Spielnamen spielen",
   "This build has no Microsoft sign-in, so it plays offline only.": "Diese Version hat keine Microsoft-Anmeldung und spielt nur offline.",
-  "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.": "Offline-Welten und -Server funktionieren. Online-Server brauchen ein angemeldetes Konto."
+  "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.": "Offline-Welten und -Server funktionieren. Online-Server brauchen ein angemeldetes Konto.",
+  "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline.": "„Spielen“ startet Minecraft {version} offline aus der Kopie auf diesem PC (von Horizon oder einem anderen Launcher)."
 }

@@ -665,5 +665,6 @@
   "Play offline as {name}": "Играть офлайн как {name}",
   "Play offline as the game's own name": "Играть офлайн под именем игры",
   "This build has no Microsoft sign-in, so it plays offline only.": "В этой сборке нет входа через Microsoft, поэтому она играет только офлайн.",
-  "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.": "Миры и серверы в офлайн-режиме работают. Для онлайн-серверов нужен вход в аккаунт."
+  "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.": "Миры и серверы в офлайн-режиме работают. Для онлайн-серверов нужен вход в аккаунт.",
+  "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline.": "«Играть» запускает Minecraft {version} офлайн из копии на этом ПК (Horizon или другого лаунчера)."
 }

@@ -1508,6 +1508,98 @@ pub fn download_version_for_owner(
     Ok(dir)
 }
 
+/// Whether `root`, in the official launcher's layout, holds version `id`: its version file and
+/// its client jar, the two the game starts with.
+fn has_version(root: &Path, id: &str) -> Result<bool, String> {
+    let dir = root.join("versions").join(mojang::relative(id)?);
+    Ok(dir.join(format!("{id}.json")).is_file() && dir.join(format!("{id}.jar")).is_file())
+}
+
+/// A Minecraft folder on this PC that already holds version `id`, to start from instead of
+/// downloading it: the one chosen in the launcher, else Horizon's own, else any launcher's own
+/// (`minecraft_folders`, in its order). Files are read as they are, as Minecraft reads them;
+/// none is written to.
+fn installed(id: &str, log: &dyn Fn(String)) -> Option<PathBuf> {
+    let linked = data_dir().join("linked-minecraft");
+    let dir = minecraft_folders()
+        .into_iter()
+        .filter(|dir| *dir != linked)
+        .find(|dir| has_version(dir, id).unwrap_or(false))?;
+    log(format!(
+        "Using Minecraft {id} from {}",
+        dir.display()
+    ));
+    Some(dir)
+}
+
+/// Where an instance's version starts from: Horizon's own Minecraft folder when it has the
+/// version (game and loader profile), else the game another launcher installed on this PC
+/// (`installed`), else Mojang's download into Horizon's own folder — which takes an account
+/// that owns Minecraft. A build without a Microsoft client ID (this fork's releases) cannot
+/// sign in, so there it starts from the copy on the PC, or says how to get one.
+fn java_minecraft(
+    id: &str,
+    loader: Option<&crate::loaders::Loader>,
+    log: &dyn Fn(String),
+) -> Result<PathBuf, String> {
+    let own = data_dir().join("minecraft");
+    let profile = loader.map(|l| l.kind.profile_id(&l.version, id));
+    // The loader's own profile sits beside the game's in the same folder when that launcher
+    // installed it (Fabric's installer does); Horizon's download adds it to its own.
+    let starts_in = |dir: &Path| -> bool {
+        has_version(dir, id).unwrap_or(false)
+            && profile
+                .as_deref()
+                .is_none_or(|p| has_version(dir, p).unwrap_or(false))
+    };
+    if starts_in(&own) {
+        return Ok(own);
+    }
+    let signed_in = account::client_id().is_some();
+    if signed_in {
+        // What this launcher has always done for an owner: Mojang's own download, first.
+        let listed = crate::minecraft_versions::load()?;
+        let version = listed.find(id)?;
+        match download_version_for_owner(&version.id, &version.sha1, log) {
+            Ok(()) => return Ok(own),
+            Err(e) => {
+                if let Some(dir) = installed(id, log) {
+                    return Ok(dir);
+                }
+                return Err(e);
+            }
+        }
+    }
+    if let Some(dir) = installed(id, log) {
+        if profile
+            .as_deref()
+            .is_none_or(|p| has_version(&dir, p).unwrap_or(false))
+        {
+            return Ok(dir);
+        }
+        return Err(format!(
+            "Minecraft {id} is in {}, but {name} {loader} is not installed there. Add {name} \
+             {loader} to that install (its installer, with that folder chosen), then Play again. \
+             Horizon cannot download {name} for you: this build has no Microsoft sign-in, and a \
+             download takes an account that owns Minecraft: Java Edition.",
+            dir.display(),
+            name = loader.map(|l| l.kind.name()).unwrap_or("the loader"),
+            loader = loader.map(|l| l.version.as_str()).unwrap_or_default(),
+        ));
+    }
+    let listed = crate::minecraft_versions::load()?;
+    let version = listed.find(id)?;
+    download_version_for_owner(&version.id, &version.sha1, log).map_err(|e| {
+        format!(
+            "{e}\n\nThis build cannot sign in to Microsoft, so it cannot download Minecraft {id} \
+             for you. Install Minecraft {id} on this PC with the official Minecraft launcher (or \
+             Prism, MultiMC, the Modrinth App), play it once there so the download finishes, then \
+             Play here: Horizon starts the game from those files, offline."
+        )
+    })?;
+    Ok(own)
+}
+
 /// The command that starts a Java instance's Minecraft, for an account that owns the game: its
 /// version downloaded from Mojang the first time (then it starts offline too), the Java it needs
 /// (the instance's own, else one found here, else Mojang's, downloaded), and the game in the
@@ -1524,45 +1616,19 @@ pub fn java_game(
             instance.name
         )
     })?;
-    // The gate comes after the download: a version the launcher has not fetched yet needs an
-    // owner to fetch it, and a version already on disk (from here or another launcher) plays
-    // past the gate's refusals, as offline as its own files allow.
-    let minecraft = data_dir().join("minecraft");
+    // The gate comes after the files: a version the launcher has not fetched yet needs an
+    // owner to fetch it, a version already on disk (Horizon's, or another launcher's, borrowed)
+    // plays past the gate's refusals, as offline as its own files allow.
+    let minecraft = java_minecraft(&game.minecraft, game.loader.as_ref(), log)?;
     let id = mojang::relative(&game.minecraft)?;
-    let natives = minecraft.join("natives").join(&id);
-    // Each version and loader profile is fetched once; it then starts offline too.
-    let downloaded = |id: &str| -> Result<PathBuf, String> {
-        Ok(minecraft
-            .join("versions")
-            .join(mojang::relative(id)?)
-            .join(".downloaded"))
-    };
-    let marker = downloaded(&game.minecraft)?;
-    if !marker.is_file() {
-        let listed = crate::minecraft_versions::load()?;
-        let version = listed.find(&game.minecraft)?;
-        download_version_for_owner(&version.id, &version.sha1, log).map_err(|e| {
-            if account::client_id().is_some() {
-                e
-            } else {
-                format!(
-                    "{e}\n\nThis build cannot sign in to Microsoft, so it cannot download \
-                     Minecraft {v}: put a Minecraft {v} install (its versions, libraries and \
-                     assets folders) on this PC's launcher, or point the instance's Game folder \
-                     at one a launcher on this PC made. Then Play uses those files offline.",
-                    v = game.minecraft
-                )
-            }
-        })?;
-        fs::write(&marker, "").map_err(|e| format!("{}: {e}", marker.display()))?;
-    }
+    let natives = data_dir().join("minecraft").join("natives").join(&id);
     let mut start = game.minecraft.clone();
     if let Some(loader) = &game.loader {
         start = loader.kind.profile_id(&loader.version, &game.minecraft);
-        let marker = downloaded(&start)?;
-        if !marker.is_file() {
+        if !has_version(&minecraft, &start)? {
+            // Only Horizon's own folder is written to: another launcher's install is borrowed
+            // as it is.
             start = crate::loaders::install(loader, &game.minecraft, &minecraft, &get_bytes, log)?;
-            fs::write(downloaded(&start)?, "").map_err(|e| e.to_string())?;
         }
     }
     let player = account::java_player()?;
