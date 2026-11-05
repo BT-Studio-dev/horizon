@@ -348,7 +348,10 @@ impl Game<'_> {
     /// a cap named here or the machine, and F3 says which.
     pub(super) fn debug_fps_line(&self, d: &mut debug_overlay::Displayer) {
         let (limit, capped_by) = self.frame_limit_and_why();
-        let capped_by = capped_by.map_or_else(String::new, |why| format!(" [{why}]"));
+        let capped_by = match capped_by {
+            Some(why) => format!(" [{why}]"),
+            None => String::new(),
+        };
         let present = self
             .renderer
             .as_ref()
