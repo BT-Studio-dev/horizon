@@ -1561,7 +1561,7 @@ fn java_minecraft(
         let listed = crate::minecraft_versions::load()?;
         let version = listed.find(id)?;
         match download_version_for_owner(&version.id, &version.sha1, log) {
-            Ok(()) => return Ok(own),
+            Ok(_) => return Ok(own),
             Err(e) => {
                 if let Some(dir) = installed_minecraft(id, log) {
                     return Ok(dir);
