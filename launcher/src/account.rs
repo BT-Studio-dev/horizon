@@ -2179,9 +2179,22 @@ fn offline_fallback(
     store: &dyn SecretStore,
     accounts: &mut Accounts,
 ) -> Result<crate::java_launch::Player, String> {
+    let cannot_sign_in = sign_in_refused();
+    offline_fallback_when(ep, client_id, store, accounts, cannot_sign_in)
+}
+
+/// [`offline_fallback`], told whether this build can sign in: a build with no client ID, or one
+/// Microsoft refused (`sign_in_refused`), plays offline; another keeps the gate as it was.
+fn offline_fallback_when(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    store: &dyn SecretStore,
+    accounts: &mut Accounts,
+    cannot_sign_in: bool,
+) -> Result<crate::java_launch::Player, String> {
     match java_player_with(ep, client_id, store, accounts) {
         Ok(player) => Ok(player),
-        Err(refused) if sign_in_refused() => match &accounts.player() {
+        Err(refused) if cannot_sign_in => match &accounts.player() {
             // A Microsoft account's name is its own; an offline name's letters may not be
             // the game's idea of one, so it is checked before it is used.
             Player::Microsoft(_) => Err(refused),

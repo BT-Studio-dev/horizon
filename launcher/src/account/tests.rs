@@ -1091,7 +1091,7 @@ fn a_build_that_cannot_sign_in_plays_as_the_offline_name() {
     let mut accounts = Accounts::default();
     accounts.add_offline("Builder_1").unwrap();
     accounts.offline_selected = Some("Builder_1".into());
-    let player = offline_fallback(&offline(), None, &store, &mut accounts).unwrap();
+    let player = offline_fallback_when(&offline(), None, &store, &mut accounts, true).unwrap();
     assert_eq!(player.name, "Builder_1");
     assert_eq!(
         player.uuid,
@@ -1100,13 +1100,13 @@ fn a_build_that_cannot_sign_in_plays_as_the_offline_name() {
     assert_eq!(player.token, "");
     // With no name picked, the game's own name.
     accounts.offline_selected = None;
-    let player = offline_fallback(&offline(), None, &store, &mut accounts).unwrap();
+    let player = offline_fallback_when(&offline(), None, &store, &mut accounts, true).unwrap();
     assert_eq!(player.name, "Player");
     // A Microsoft account is not an offline name: it plays with its session or not at all.
     let store = MemoryStore::default();
     let mut accounts = signed_in(&store, &secrets("mc-token", false));
     assert_eq!(
-        offline_fallback(&offline(), None, &store, &mut accounts).unwrap_err(),
+        offline_fallback_when(&offline(), None, &store, &mut accounts, true).unwrap_err(),
         NoOwner.to_string()
     );
     // A configured build keeps the gate exactly as it was.
@@ -1115,7 +1115,8 @@ fn a_build_that_cannot_sign_in_plays_as_the_offline_name() {
     accounts.add_offline("Builder_1").unwrap();
     accounts.offline_selected = Some("Builder_1".into());
     assert_eq!(
-        offline_fallback(&offline(), Some("test-client"), &store, &mut accounts).unwrap_err(),
+        offline_fallback_when(&offline(), Some("test-client"), &store, &mut accounts, false)
+            .unwrap_err(),
         NoOwner.to_string()
     );
 }
