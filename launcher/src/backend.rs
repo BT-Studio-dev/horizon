@@ -1555,8 +1555,7 @@ fn java_minecraft(
     if starts_in(&own) {
         return Ok(own);
     }
-    let signed_in = account::client_id().is_some();
-    if signed_in {
+    if account::client_id().is_some() {
         // What this launcher has always done for an owner: Mojang's own download, first.
         let listed = crate::minecraft_versions::load()?;
         let version = listed.find(id)?;
@@ -1571,18 +1570,20 @@ fn java_minecraft(
         }
     }
     if let Some(dir) = installed_minecraft(id, log) {
-        if profile
+        let loader_there = profile
             .as_deref()
-            .is_none_or(|p| has_version(&dir, p).unwrap_or(false))
-        {
+            .is_none_or(|p| has_version(&dir, p).unwrap_or(false));
+        if loader_there {
             return Ok(dir);
         }
+        // The game is there, its loader is not. Horizon adds a loader in its own folder only,
+        // so the copy it starts from is its own, made out of that one.
         return Err(format!(
-            "Minecraft {id} is in {}, but {name} {loader} is not installed there. Add {name} \
-             {loader} to that install (its installer, with that folder chosen), then Play again. \
-             Horizon cannot download {name} for you: this build has no Microsoft sign-in, and a \
-             download takes an account that owns Minecraft: Java Edition.",
+            "Minecraft {id} is in {}, but {name} {loader} is not. Copy that folder's versions, \
+             libraries and assets into {} (they add up to the copy Horizon starts), or add \
+             {name} {loader} to the launched version yourself, then Play again.",
             dir.display(),
+            data_dir().join("minecraft").display(),
             name = loader.map(|l| l.kind.name()).unwrap_or("the loader"),
             loader = loader.map(|l| l.version.as_str()).unwrap_or_default(),
         ));
@@ -1619,18 +1620,31 @@ pub fn java_game(
     // The gate comes after the files: a version the launcher has not fetched yet needs an
     // owner to fetch it, a version already on disk (Horizon's, or another launcher's, borrowed)
     // plays past the gate's refusals, as offline as its own files allow.
-    let minecraft = java_minecraft(&game.minecraft, game.loader.as_ref(), log)?;
-    let id = mojang::relative(&game.minecraft)?;
-    let natives = data_dir().join("minecraft").join("natives").join(&id);
+    let own = data_dir().join("minecraft");
+    let minecraft = java_minecraft(&game.minecraft, log)?;
     let mut start = game.minecraft.clone();
     if let Some(loader) = &game.loader {
         start = loader.kind.profile_id(&loader.version, &game.minecraft);
         if !has_version(&minecraft, &start)? {
-            // Only Horizon's own folder is written to: another launcher's install is borrowed
-            // as it is.
+            // Horizon installs a loader only in its own folder: another launcher's install is
+            // read as it is, so its loader has to be the one that launcher made.
+            if minecraft != own {
+                return Err(format!(
+                    "Minecraft {} is in {}, but {name} {} is not. Horizon adds a loader only in \
+                     its own folder ({}): copy that Minecraft into it, and Play installs {name} \
+                     there.",
+                    game.minecraft,
+                    minecraft.display(),
+                    own.display(),
+                    name = loader.kind.name(),
+                    loader = loader.version,
+                ));
+            }
             start = crate::loaders::install(loader, &game.minecraft, &minecraft, &get_bytes, log)?;
         }
     }
+    let id = mojang::relative(&game.minecraft)?;
+    let natives = own.join("natives").join(&id);
     let player = account::java_player()?;
     let file = minecraft
         .join("versions")

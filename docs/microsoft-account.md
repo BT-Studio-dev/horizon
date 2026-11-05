@@ -21,6 +21,10 @@ Mojang still takes an owner — so Play starts the game from the copy already on
 (`backend::java_minecraft`: Horizon's own folder, else the one chosen in the launcher, else any
 launcher's, its files read where they are), and a version that is nowhere says how to get one.
 
+A loader is the one exception: Horizon installs Fabric in its own folder only, never into another
+launcher's Minecraft, so a modded instance plays the loader profile that folder has (`java_game`);
+without one it asks for the copy to be made in Horizon's own folder, where Play installs it.
+
 1. **Azure app registration** (https://portal.azure.com → Microsoft Entra ID → App registrations →
    New registration):
    - Name: `Horizon` (shown to players on the Microsoft consent page).

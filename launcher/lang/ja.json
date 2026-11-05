@@ -666,5 +666,5 @@
   "Play offline as the game's own name": "ゲーム既定の名前でオフラインプレイ",
   "This build has no Microsoft sign-in, so it plays offline only.": "このビルドには Microsoft サインインがないため、オフラインのみでプレイします。",
   "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.": "オフラインモードのワールドとサーバーは使えます。オンラインモードのサーバーにはサインインしたアカウントが必要です。",
-  "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline.": "「プレイ」はこの PC にある Minecraft {version} のコピー（Horizon または他のランチャーのもの）からオフラインで起動します。"
+  "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline. With no copy yet, install Java Edition with the official launcher first.": "「プレイ」はこの PC にある Minecraft {version} のコピー（Horizon または他のランチャーのもの）からオフラインで起動します。まだ無い場合は、先に公式ランチャーで Java Edition をインストールしてください。"
 }

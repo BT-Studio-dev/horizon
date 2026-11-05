@@ -666,5 +666,5 @@
   "Play offline as the game's own name": "Грати офлайн з іменем гри",
   "This build has no Microsoft sign-in, so it plays offline only.": "У цій збірці немає входу через Microsoft, тому вона грає лише офлайн.",
   "Offline-mode worlds and servers work. Online-mode servers need a signed-in account.": "Світи й сервери в офлайн-режимі працюють. Для онлайн-серверів потрібен вхід в акаунт.",
-  "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline.": "«Грати» запускає Minecraft {version} офлайн із копії на цьому ПК (Horizon або іншого лаунчера)."
+  "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline. With no copy yet, install Java Edition with the official launcher first.": "«Грати» запускає Minecraft {version} офлайн із копії на цьому ПК (Horizon або іншого лаунчера). Якщо копії ще немає, спершу встановіть Java Edition офіційним лаунчером."
 }

@@ -149,7 +149,9 @@ The opening, then Play ([clip](docs/opening.webm)):
   with the UUID an offline-mode server makes for it, and says so in the window. It never downloads
   Minecraft that way (that takes an owner), so Play starts the game from the copy on the PC
   instead: Horizon's own Minecraft folder, the one chosen in the launcher, or another launcher's
-  (`backend::java_minecraft`), with the loader's profile from the same folder. Settings > Account
+  (`backend::java_minecraft`). A loader (Fabric) is installed only in Horizon's own folder, never
+  into another launcher's install: an instance plays the profile that folder already has, and
+  says so when there is none. Settings > Account
   adds offline names (3 to 16 letters, digits or `_`; the game gets `--name`) and forgets them,
   skin and cape files included, and rolls the game's made-up name for a new one; the Console's
   Share log takes the names out of the log too. `horizon-launcher account offline

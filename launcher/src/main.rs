@@ -2905,7 +2905,7 @@ impl Launcher {
                     div()
                         .child(if self.settings.dev_offline || account::client_id().is_none() {
                             trf(
-                                "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline.",
+                                "Play starts Minecraft {version} from the copy on this PC (Horizon's, or another launcher's), offline. With no copy yet, install Java Edition with the official launcher first.",
                                 &[("version", &java.minecraft)],
                             )
                         } else {
