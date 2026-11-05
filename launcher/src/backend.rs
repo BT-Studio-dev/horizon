@@ -1571,8 +1571,7 @@ pub fn java_game(
         }
     };
     let software_opengl = prepare_legacy_java_software_opengl(&runtime, log);
-    let mut jvm_args: Vec<String> =
-        game.jvm_args.split_whitespace().map(String::from).collect();
+    let mut jvm_args: Vec<String> = game.jvm_args.split_whitespace().map(String::from).collect();
     if let Some(loader) = &software_opengl {
         // LWJGL looks for opengl32 in its own system paths; name the Mesa
         // loader outright. First of the extra arguments, so a libname of
@@ -1645,12 +1644,10 @@ fn sync_legacy_mesa_dlls_in(
         if managed {
             for target in &targets {
                 if target.is_file() {
-                    fs::remove_file(target)
-                        .map_err(|e| format!("{}: {e}", target.display()))?;
+                    fs::remove_file(target).map_err(|e| format!("{}: {e}", target.display()))?;
                 }
             }
-            fs::remove_file(&marker_path)
-                .map_err(|e| format!("{}: {e}", marker_path.display()))?;
+            fs::remove_file(&marker_path).map_err(|e| format!("{}: {e}", marker_path.display()))?;
         }
         return Ok(false);
     };
@@ -1676,11 +1673,9 @@ fn sync_legacy_mesa_dlls_in(
             continue;
         }
         if target.is_file() {
-            replace_binary(&source, &target)
-                .map_err(|e| format!("{}: {e}", target.display()))?;
+            replace_binary(&source, &target).map_err(|e| format!("{}: {e}", target.display()))?;
         } else {
-            fs::copy(&source, &target)
-                .map_err(|e| format!("{}: {e}", target.display()))?;
+            fs::copy(&source, &target).map_err(|e| format!("{}: {e}", target.display()))?;
         }
     }
     fs::write(&marker_path, wanted).map_err(|e| format!("{}: {e}", marker_path.display()))?;
@@ -4663,10 +4658,8 @@ pub fn {f}("
     #[test]
     fn legacy_mesa_pair_follows_the_launcher_into_a_java_runtime() {
         let dlls = ["opengl32.dll", "libgallium_wgl.dll"];
-        let root = std::env::temp_dir().join(format!(
-            "horizon-legacy-mesa-java-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("horizon-legacy-mesa-java-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let launcher = root.join("launcher");
         let bin = root.join("runtime/bin");
